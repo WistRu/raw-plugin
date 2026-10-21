@@ -18,7 +18,7 @@ import { land } from './land'
 import { prune, pruneLine, scan } from './prune'
 import type { Host, Repo } from './repo'
 import { placeOf, readRepo } from './repo'
-import { sectionText } from './section'
+import { placeText, ruleText } from './section'
 
 export const isGuardOn = atom({ plugin: 'rp', key: 'isWorktreeGuardOn' } as const, true)
 
@@ -27,9 +27,9 @@ export const isGuardOn = atom({ plugin: 'rp', key: 'isWorktreeGuardOn' } as cons
 const REPO_FRESH_MS = 10_000
 let cached: { root: string; at: number; repo: Repo | undefined } | undefined
 let failedOnce = false
-// The section's text, computed at the session's start and at each turn's
-// start of the main loop, never per request: undefined when silent.
-let section: string | undefined
+// The rule's text for the system prompt, undefined when silent. It changes
+// only with the repository (its main branch), so the prompt cache holds.
+let rule: string | undefined
 // What can be pruned, read once at the session's start (and after a prune).
 let pruneText: string | undefined
 
@@ -139,8 +139,6 @@ async function landHere($: EngineInterface, agentId?: string): Promise<string> {
     return await land(host, repo, cwdReal, { leave })
   } finally {
     forget()
-    // the section is the main loop's place; a subagent's cwd is its own
-    if (agentId === undefined) await computeSection($).catch(() => undefined)
   }
 }
 
@@ -152,7 +150,7 @@ async function scanPrune($: EngineInterface): Promise<void> {
   pruneText = pruneLine(await scan(host, repo, (await host.real(cwd)) ?? cwd))
 }
 
-async function pruneHere($: EngineInterface, agentId?: string): Promise<string> {
+async function pruneHere($: EngineInterface): Promise<string> {
   const repo = await repoOf($)
   if (!repo) return 'Nothing to prune: not in a git repository with a main branch (origin/HEAD, main or master).'
   const host = hostOf($)
@@ -162,7 +160,6 @@ async function pruneHere($: EngineInterface, agentId?: string): Promise<string> 
   } finally {
     forget()
     pruneText = undefined
-    if (agentId === undefined) await computeSection($).catch(() => undefined)
   }
 }
 
@@ -171,7 +168,6 @@ async function worktreeCommand($: EngineInterface, args: string): Promise<{ text
   if (word === 'prune') return { text: await pruneHere($).catch(err => `prune: ${String(err)}`) }
   if (word === 'off' || word === 'on') {
     await update($, isGuardOn, () => word === 'on')
-    await computeSection($).catch(() => undefined)
     return { text: word === 'on' ? 'Worktree guard on for this session: code edits in the main tree are refused.' : 'Worktree guard off for this session: edits in the main tree go through. /worktree on restores it.' }
   }
   const repo = await repoOf($)
@@ -180,33 +176,33 @@ async function worktreeCommand($: EngineInterface, args: string): Promise<{ text
   return { text: `Worktree guard ${on ? 'on' : 'off'} in ${repo.root} (main branch ${repo.main}). Usage: /worktree on | off | prune` }
 }
 
-async function computeSection($: EngineInterface): Promise<void> {
+// Where the session stands now, read afresh: the context a prompt carries.
+// Also refreshes the rule, so the system prompt follows the repository.
+async function placeNote($: EngineInterface): Promise<string | undefined> {
   forget()
   const repo = await repoOf($)
-  if (!repo) {
-    section = undefined
-    return
-  }
+  rule = repo ? ruleText(repo) : undefined
+  if (!repo) return undefined
   const host = hostOf($)
   const cwd = await $.session.cwd()
   const place = await placeOf(host, repo, (await host.real(cwd)) ?? cwd)
-  section = sectionText(repo, place, await read($, isGuardOn), pruneText)
+  return placeText(repo, place, await read($, isGuardOn), pruneText)
 }
 
-// The rule and the place; hooks/register.ts adds it in the plugin's one
+// The rule alone; hooks/register.ts adds it in the plugin's one
 // prompt.compose hook.
 export async function worktreeSection($: EngineInterface): Promise<PromptComposeSection | undefined> {
-  return section === undefined ? undefined : { id: `${$.plugin.name}:worktree`, text: section, scope: 'session' }
+  return rule === undefined ? undefined : { id: `${$.plugin.name}:worktree`, text: rule, scope: 'session' }
 }
 
 // Called from the plugin's one session.start hook (hooks/register.ts).
 export async function startWorktree($: EngineInterface): Promise<void> {
   cached = undefined
   failedOnce = false
-  section = undefined
+  rule = undefined
   pruneText = undefined
   await scanPrune($).catch(err => $.ui.log(`${$.plugin.name}: the landed branches could not be listed: ${String(err)}`, { to: 'debug' }))
-  await computeSection($).catch(err => $.ui.log(`${$.plugin.name}: the worktree section could not be computed: ${String(err)}`, { to: 'debug' }))
+  await placeNote($).catch(err => $.ui.log(`${$.plugin.name}: the worktree rule could not be read: ${String(err)}`, { to: 'debug' }))
   await $.command.register({ name: 'worktree', description: 'The worktree guard: "off" lifts it for this session, "on" restores it; "prune" removes landed branches and their worktrees', argumentHint: 'on | off | prune' })
     .catch(err => $.ui.log(`${$.plugin.name}: /worktree not registered: ${String(err)}`, { to: 'debug' }))
   await $.command.register({ name: 'land', description: 'Land this worktree: fast-forward it onto the main branch, then remove the worktree and its branch' })
@@ -228,7 +224,7 @@ export function registerWorktree(on: On): void {
   on('command.run', { command: 'rp:worktree' }, ($, e) => worktreeCommand($, e.args))
   on('command.run', { command: 'land' }, async $ => ({ text: await landHere($).catch(err => `Not landed: ${String(err)}`) }))
   on('command.run', { command: 'rp:land' }, async $ => ({ text: await landHere($).catch(err => `Not landed: ${String(err)}`) }))
-  on('tool.call', { tool: 'mcp__rp__worktree_prune' }, async ($, e) => answer(await pruneHere($, e.agentId).catch(err => `prune: ${String(err)}`)))
+  on('tool.call', { tool: 'mcp__rp__worktree_prune' }, async $ => answer(await pruneHere($).catch(err => `prune: ${String(err)}`)))
   on('tool.call', { tool: 'mcp__rp__land' }, async ($, e) => answer(await landHere($, e.agentId).catch(err => `Not landed: ${String(err)}`)))
 
   // MultiEdit is matched by name: this build ships no such tool, an older one may
@@ -248,10 +244,16 @@ export function registerWorktree(on: On): void {
   })
 
   // A worktree came or went: read the repository afresh.
-  // Once a turn of the main loop: where the session stands now.
-  on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) await computeSection($).catch(err => $.ui.log(`${$.plugin.name}: the worktree section could not be computed: ${String(err)}`, { to: 'debug' }))
-    return next(e)
+  // Each prompt carries where the session stands, after the cached prefix.
+  // The classic UserPromptSubmit event, not prompt.submit: the plugin's one
+  // hooks module may hold one unmatched prompt.submit hook, and team's is it.
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    const done = await next(e)
+    const note = await placeNote($).catch(err => {
+      $.ui.log(`${$.plugin.name}: the worktree place could not be read: ${String(err)}`, { to: 'debug' })
+      return undefined
+    })
+    return note === undefined ? done : { ...done, additionalContext: [...(done.additionalContext ?? []), note] }
   })
 
   on('tool.call', { tool: /^(EnterWorktree|ExitWorktree)$/ }, async ($, e, next) => {

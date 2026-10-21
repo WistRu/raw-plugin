@@ -7,7 +7,7 @@ import { prune, pruneLine, scan } from './prune'
 import type { Writes } from './guard'
 import type { Host, Ran } from './repo'
 import { parseConfig, placeOf, readRepo } from './repo'
-import { sectionText } from './section'
+import { placeText, ruleText } from './section'
 
 // A repository made of answers: the git calls this module makes, answered
 // from a few facts; `answers` overrides one call by `<cwd>: <argv>`.
@@ -162,7 +162,7 @@ test('the config file: three keys, anything else is refused by name', async () =
   expect(repo?.config).toEqual({})
 })
 
-test('the section: the rule in three lines and where the session stands', async () => {
+test('the rule stays in the system prompt; the place rides each prompt', async () => {
   const host = fake({
     ...REPO,
     answers: {
@@ -172,15 +172,16 @@ test('the section: the rule in three lines and where the session stands', async 
   })
   const repo = await readRepo(host, '/r')
   if (!repo) throw new Error('no repo')
-  const inMain = sectionText(repo, await placeOf(host, repo, '/r/src'), true)
-  expect(inMain.split('\n').length).toBe(4)
-  expect(inMain).toMatch(/EnterWorktree/)
-  expect(inMain).toMatch(/mcp__rp__land/)
-  expect(inMain.split('\n')[3]).toBe('Here: main tree of /r: code edits are refused, enter a worktree first.')
-  expect(sectionText(repo, await placeOf(host, repo, '/r'), false)).toMatch(/guard is off for this session \(\/worktree on restores it\)/)
-  const inTree = sectionText(repo, await placeOf(host, repo, '/r/.claude/worktrees/feat/src'), true, 'Prune: something')
-  expect(inTree.split('\n')[3]).toBe('Here: worktree /r/.claude/worktrees/feat, branch feat, 2 commits not on main, dirty.')
-  expect(inTree.split('\n')[4]).toBe('Prune: something')
+  const rule = ruleText(repo)
+  expect(rule.split('\n').length).toBe(3)
+  expect(rule).toMatch(/EnterWorktree/)
+  expect(rule).toMatch(/mcp__rp__land/)
+  // nothing in the rule depends on where the session stands: the cache holds
+  expect(rule).not.toMatch(/Here:|Prune:|commits? not on|dirty|clean/)
+  expect(placeText(repo, await placeOf(host, repo, '/r/src'), true)).toBe('Here: main tree of /r: code edits are refused, enter a worktree first.')
+  expect(placeText(repo, await placeOf(host, repo, '/r'), false)).toMatch(/guard is off for this session \(\/worktree on restores it\)/)
+  const inTree = placeText(repo, await placeOf(host, repo, '/r/.claude/worktrees/feat/src'), true, 'Prune: something')
+  expect(inTree.split('\n')).toEqual(['Here: worktree /r/.claude/worktrees/feat, branch feat, 2 commits not on main, dirty.', 'Prune: something'])
 })
 
 const WT = '/r/.claude/worktrees/feat'
@@ -330,4 +331,57 @@ test('pruning: landed by content, never the unsafe ones, -D only beside its empt
   if (!r2) throw new Error('no repo')
   expect((await scan(onSide, r2, '/w/mine')).landed.map(l => l.branch)).toEqual(['old', 'reb'])
   expect(pruneLine({ landed: [], kept: ['x'] })).toBeUndefined()
+})
+
+// The whole plugin over a fake engine: a session in the main tree of /r.
+test('a prompt carries the place as context; the system prompt carries the rule alone', async ($, on) => {
+  const git: Record<string, string> = {
+    'rev-parse --verify --quiet refs/heads/main': 'abc',
+    'worktree list --porcelain': 'worktree /r\nHEAD 0123\nbranch refs/heads/main\n',
+    'symbolic-ref --quiet --short HEAD': 'main\n',
+    'for-each-ref --format=%(refname:short) refs/heads/': 'main\n',
+  }
+  const result = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+  on('process.run', (_, e) => {
+    if (e.argv[0] !== 'git') return result('', 1)
+    const out = git[e.argv.slice(1).join(' ')]
+    return out === undefined ? result('', 1) : result(out)
+  })
+  on('session.repo', () => ({ value: { root: '/r', remote: null, internal: false, name: null } }))
+  on('session.cwd', () => ({ value: '/r' }))
+  on('session.root', () => ({ value: '/r' }))
+  on('session.id', () => ({ value: 'engine-id' }))
+  on('session.model', () => ({ value: 'opus' }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('fs.stat', (_, e) => ({ value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false, realPath: e.path.replace(/\/$/, '') } }))
+  on('fs.read', (_, e) => {
+    throw new Error(`ENOENT ${e.path}`)
+  })
+  on('fs.exists', () => ({ value: false }))
+  on('fs.list', () => {
+    throw new Error('ENOENT')
+  })
+  on('fs.write', () => ({ value: undefined }))
+  on('env.get', () => ({ value: '/home/u' }))
+  on('clock.now', () => ({ value: 1_700_000_000_000 }))
+  on('clock.every', () => ({ value: undefined }))
+  on('clock.sleep', () => ({ value: undefined }))
+  on('store.get', () => ({ value: undefined }))
+  on('store.set', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__rp__${e.name}` } }))
+  on('agent.register', (_, e) => ({ value: { agent: `rp:${e.name}` } }))
+  on('tool.list', () => ({ value: [] }))
+  on('classic.UserPromptSubmit', () => ({}))
+  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'engine', scope: 'shared' as const }] }))
+  await $.session.start({ cwd: '/r', surface: 'desktop', isInteractive: true })
+
+  const composed = await $.prompt.compose({ model: 'opus', promptModel: 'opus', surfaces: [], tools: [], outputStyle: null, traits: [] })
+  const mine = composed.sections.find(x => x.id === 'rp:worktree')
+  expect(mine?.text.split('\n').length).toBe(3)
+  expect(mine?.text).not.toMatch(/Here:/)
+  const asked = await $.classic.UserPromptSubmit({ prompt: 'fix the bug', permission_mode: 'default' } as never)
+  expect(asked.additionalContext).toEqual(['Here: main tree of /r: code edits are refused, enter a worktree first.'])
 })

@@ -215,14 +215,18 @@ the landing.
   the repository lets the write through and says so once.
 - **`/worktree off`** and **`/worktree on`** lift and restore the guard for
   this session (`rp.isWorktreeGuardOn` in `$.state`).
-- **The prompt section**: the rule in three lines and where the session
-  stands, computed at the session's start and at the start of each turn of
-  the main loop, never per request: `Here: main tree of <repo>: code edits
-  are refused, enter a worktree first.` or `Here: worktree <path>, branch
-  <b>, <n> commits not on <main>, clean|dirty.` The text changes when the
-  place does (a commit, an edit), and a changed section is re-sent uncached
-  on the next request after it, so it costs a cache write of the
-  conversation once per turn in which it changed.
+- **What the model reads**: the rule in three lines is a section of the
+  system prompt, and nothing in it depends on where the session stands, so
+  the prompt cache holds. Where the session stands rides each prompt as
+  context instead (the classic `UserPromptSubmit` event's
+  `additionalContext`; the plugin's one unmatched `prompt.submit` hook is
+  the team module's), read afresh when the prompt is sent: `Here: main
+  tree of <repo>: code edits are refused, enter a worktree first.` or
+  `Here: worktree <path>, branch <b>, <n> commits not on <main>,
+  clean|dirty.`, and the `Prune:` line when there is something to prune. It
+  sits after the cached prefix and costs a few dozen tokens a prompt. Seen
+  live on 2026-10-21: the rule in the system prompt, the `Here:` line with
+  the message and not in the system prompt.
 - **The landing** (`/land`, or the tool `mcp__rp__land`): from the session
   that works in the worktree. Each step refuses with its reason and nothing
   after it runs: the worktree is clean (`git status --porcelain` empty); the
@@ -244,7 +248,7 @@ the landing.
   a branch is landed when `git cherry <main> <branch>` lists no `+` commit,
   content and not ancestry, so a branch landed by a rebase counts. At the
   session's start the landed branches, their worktrees and each one's size
-  (`du -sh`) are one `Prune:` line of the prompt section, nothing when
+  (`du -sh`) are one `Prune:` line of the context each prompt carries, nothing when
   there is nothing to prune. The prune removes each landed branch's
   worktree with `git worktree remove` and deletes the branch with `git
   branch -d`, or `-D` for a branch landed by rebase, printed beside its
