@@ -38,7 +38,9 @@ export type Snapshot = {
 export type TeamView = {
   slug: string
   goal: string
-  roles: { name: string; isStarted: boolean; isActive: boolean; context?: number; lastAt?: string }[]
+  // isStarted: a session or agent was started for it; isBound: that session
+  // has bound itself (it knows its role).
+  roles: { name: string; isStarted: boolean; isBound: boolean; context?: number; lastAt?: string; answer?: string }[]
   board: string
 }
 

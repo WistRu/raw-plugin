@@ -63,26 +63,36 @@ folder.
   `handoff/<role>.md`, `inbox/<role>/`, `notify.sh`, a `.gitignore` of `*`).
   The session that created the team is its lead.
 - **One session per role** through the desktop app's `start_session` tool;
-  in a terminal, one subagent per role instead. A member's session reads its
-  card, zone, rules and the queue of its note in the system prompt; the lead
-  reads the board.
-- **The ledger** (`mcp__rp__team_task`): `add`, `set`, `list`, `board`.
-  `blocked` and `ready` follow from `depends_on`; `done` wakes every task that
-  waited, `awaiting_verify` wakes the verifier, `failed`/`dropped` ask the
-  dependents' owners to decide; a task with a verifier is marked `done` only
-  by that verifier or the lead.
+  in a terminal, one subagent per role instead. Two ids per session, never
+  mixed: the desktop address (`local_...`, what a message is sent to) and the
+  engine's own id (what a session binds itself with). The brief's first line
+  binds the new session to its role before the model reads a word; the
+  binding lives in the plugin's store, so a worktree or a `/clear` (a new
+  engine id, no restart) does not lose it. A member's session reads its
+  card, zone and rules in the system prompt, a static text that leaves the
+  prompt cache alone; the live queue and board come through the tools.
+- **The ledger** (`mcp__rp__team_task`): `add`, `set`, `list`, `board`,
+  `queue`. `blocked` and `ready` follow from `depends_on`; `done` wakes every
+  task that waited, `awaiting_verify` wakes the verifier, `failed`/`dropped`
+  ask the dependents' owners to decide; a task with a verifier is marked
+  `done`, or has its verifier changed, only by that verifier or the lead.
+  `team.json` and `tasks.json` are written under a `mkdir` lock and through a
+  rename, since several sessions write them; a file that does not parse is
+  an error, never an empty ledger.
 - **Waking a role** (`mcp__rp__team_notify`, or `sh notify.sh <role> "<what>"`
-  from a shell job): an event file in the role's inbox plus a message to its
-  session; what no session received, the lead's session delivers every
-  minute.
+  from a shell job): a message to the role's session when it has one, else
+  an event file in its inbox, which the lead's session delivers every minute
+  (as data, not as an instruction); after five polls that cannot reach a
+  role, the lead is told once that its session may be gone.
 - **The handoff note** (`mcp__rp__team_handoff`): the role writes its queue
   block; the plugin adds the stamp, the session id and the context reading,
   and after every turn leaves `handoff/<role>.state.json` for the board.
   Deliveries and the session's end are appended under the note's `## Inbox`.
 - **The zone guard**: a member's Edit, Write, MultiEdit or NotebookEdit outside
-  its zone and the team folder is refused with the owner to ask.
+  its zone, its own note and its inbox is refused with the owner to ask.
+  Bash is not covered.
 - **`/team status`** draws the board (a pane in the lead's session,
-  `mcp__rp__team_status` for the model); **`/team close`** ends the team and
+  `team_task board` for the model); **`/team close`** ends the team and
   asks for the final report in one schema: done · worked or not · next.
 
 Ported from BTC5Model's convergence roles (card, handoff notes,

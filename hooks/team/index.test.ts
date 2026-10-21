@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { RULES, brief, cardText, slugify } from './card'
+import { BRIEF_MARK, RULES, brief, cardText, slugify } from './card'
 import type { Team } from './card'
 import { queueBlock, replaceQueue } from './folder'
 import { addTask, board, emptyLedger, setTask } from './ledger'
@@ -8,11 +8,11 @@ import { addTask, board, emptyLedger, setTask } from './ledger'
 const AT = '2026-10-21T13:00Z'
 
 const team = (): Team => ({
-  slug: 'demo', goal: 'Ship the thing', dir: '/p/.claude/teams/demo', root: '/p', lead: 'local_lead', created: AT,
+  slug: 'demo', goal: 'Ship the thing', dir: '/p/.claude/teams/demo', root: '/p', lead: 'lead-engine-id', created: AT,
   rules: [...RULES],
   roles: [
-    { name: 'builder', lane: 'writes the code', zone: ['src'], deliverable: 'a green test', verifier: 'checker', active: true },
-    { name: 'checker', lane: 'verifies', zone: [], deliverable: 'a verdict', verifier: null, active: true },
+    { name: 'builder', lane: 'writes the code', zone: ['src'], deliverable: 'a green test', verifier: 'checker' },
+    { name: 'checker', lane: 'verifies', zone: [], deliverable: 'a verdict', verifier: null },
   ],
 })
 
@@ -58,7 +58,10 @@ test('the card, the brief and the queue block are text the model can read', asyn
   expect(card).toMatch(/\| builder \| writes the code \| src \| a green test \| checker \|/)
   expect(card).toMatch(/1\. One owner per zone/)
   const b = brief(t, t.roles[0]!, { id: 'T-0001', title: 'build' })
-  expect(b.split('\n')[0]).toBe('[rp team] team=demo role=builder dir=/p/.claude/teams/demo')
+  const first = b.split('\n')[0] ?? ''
+  expect(first).toBe('[rp team] team=demo role=builder dir=/p/.claude/teams/demo')
+  const mark = first.match(BRIEF_MARK)
+  expect(mark?.slice(1)).toEqual(['demo', 'builder', '/p/.claude/teams/demo'])
   expect(b).toMatch(/Your first task is T-0001: build\./)
   expect(slugify('Переписать Hub ticket 03!')).toBe('переписать-hub-ticket-03')
 
@@ -69,15 +72,25 @@ test('the card, the brief and the queue block are text the model can read', asyn
   expect(replaceQueue('# r -- handoff\n\n## Inbox\n', 'h', '- d')).toBe('# r -- handoff\n\n## Queue (h)\n\n- d\n\n## Inbox\n')
 })
 
-test('/team status in a session of no team says so', async ($, on) => {
+// What the engine answers beneath the plugin for a session of no team.
+function engine(on: Parameters<Parameters<typeof test>[1]>[1]) {
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('tool.register', (_, e) => ({ value: { tool: `mcp__rp__${e.name}` } }))
+  on('tool.list', () => ({ value: [] }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('session.id', () => ({ value: 'local_me' }))
+  on('session.id', () => ({ value: 'engine-id' }))
   on('session.root', () => ({ value: '/p' }))
   on('session.repo', () => ({ value: null }))
   on('env.get', () => ({ value: '/home/u' }))
   on('fs.list', () => {
+    throw new Error('ENOENT')
+  })
+  on('fs.exists', () => ({ value: false }))
+  on('fs.read', () => {
+    throw new Error('ENOENT')
+  })
+  on('fs.write', () => ({ value: undefined }))
+  on('fs.stat', () => {
     throw new Error('ENOENT')
   })
   on('clock.now', () => ({ value: 1_700_000_000_000 }))
@@ -88,11 +101,10 @@ test('/team status in a session of no team says so', async ($, on) => {
   on('ui.log', () => ({ value: undefined }))
   on('store.get', () => ({ value: undefined }))
   on('store.set', () => ({ value: undefined }))
-  on('fs.read', () => {
-    throw new Error('ENOENT')
-  })
-  on('fs.write', () => ({ value: undefined }))
+}
 
+test('/team status in a session of no team says so', async ($, on) => {
+  engine(on)
   await $.session.start({ cwd: '/p', surface: 'desktop', isInteractive: true })
   const ran = await $.command.run({ command: 'team', args: 'status' })
   expect(ran.text).toMatch(/in no team/)

@@ -26,7 +26,7 @@ export type Task = {
 export type Ledger = { next: number; tasks: Task[] }
 
 // One wake the ledger owes after a transition: who, why, about which task.
-export type Wake = { role: string; kind: 'ready' | 'verify' | 'decide' | 'done'; task: string; text: string }
+export type Wake = { role: string; kind: 'ready' | 'verify' | 'decide'; task: string; text: string }
 
 export const emptyLedger = (): Ledger => ({ next: 1, tasks: [] })
 
@@ -80,9 +80,11 @@ export type SetArgs = {
 
 export type SetResult = { ledger: Ledger; task: Task; wakes: Wake[] } | { error: string }
 
-// Every transition that frees, re-blocks or hands a task over returns the
-// wakes it owes. `done` with an open dependency is refused unless forced;
-// `failed` and `dropped` never unblock a dependent: its owner gets `decide`.
+// Every transition that frees a dependent or hands a result to a verifier
+// returns the wakes it owes. `done` with an open dependency is refused
+// unless forced; `failed` and `dropped` never unblock a dependent: its owner
+// gets `decide`. A changed owner wakes nobody, and a reopened task does not
+// re-block its dependents: both are left for later.
 export function setTask(ledger: Ledger, args: SetArgs, at: string, by: string): SetResult {
   const before = ledger.tasks.find(t => t.id === args.id)
   if (!before) return { error: `no task ${args.id}` }
