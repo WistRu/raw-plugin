@@ -91,10 +91,11 @@ const start = ($: Parameters<Parameters<typeof test>[1]>[0]) =>
 test('a light command is never probed and runs as typed', async ($, on) => {
   const w = engine(on)
   await start($)
-  // The mocked `clock.every` answers at once, so the tick's first run lands
-  // right after the start, asynchronously: let it, before the baseline.
-  await new Promise(r => setTimeout(r, 50))
   const probes = () => w.runs.filter(r => String(r[1]).endsWith('probe.sh')).length
+  // The mocked `clock.every` answers at once, so the tick's first run (one
+  // more probe) lands right after the start, asynchronously: wait for that
+  // condition, never for a duration, before the baseline.
+  for (let i = 0; i < 200 && probes() < 2; i++) await new Promise(r => setTimeout(r, 5))
   const before = probes()
   const ran = await $.tool.call({ tool: 'Bash', command: 'git status && ls' })
   expect(ran.text).toBe('ran')

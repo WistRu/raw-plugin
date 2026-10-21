@@ -118,7 +118,8 @@ folder.
      finding is open (`force` skips, saying why).
   4. `mcp__rp__review`: the critic of the whole session, from a digest
      of the transcript (`review/digest-<k>.md`, each message clipped to
-     6000 characters and each tool output to 2000) beside the path of the
+     6000 characters, each tool call's input to 600, so an Edit's text is
+     not in it, and each tool output to 2000) beside the path of the
      session's full JSONL record, which the critic opens where the digest
      clips something that matters: the main claims of the user and the
      agent alike, the key ones verified, prior work, the checklist, the
@@ -160,9 +161,19 @@ folder.
   test, in Claude Desktop): the sessions start from the hook, bind from
   the brief, message the lead and each other, the critic gate and the
   verifier wake work, the lead's poll delivers a waiting event, and a role
-  whose session had stopped was woken by `team_notify` and answered. Not
-  yet seen live: the terminal fallback with subagents, and the review as a
-  visible critic session.
+  whose session was idle (its turn over for 45 s, `isRunning: false`) was
+  woken by `team_notify` and answered; which of the two delivery paths
+  carried it is not recorded. Not yet seen live: a role session after the
+  app restarted, the terminal fallback with subagents, and the review as a
+  visible critic session beyond its first ledger.
+- **The lock** (`hooks/team/folder.ts`, `withLock`): on Linux a child
+  process holds a `flock` on `<team>/.flock` while the ledger or the roster
+  is written and watches the session's process, so a killed session, a
+  crashed one (an OOM, a `kill -9`) and a plain return all release it
+  within a second; `sh hooks/team/lock.test.sh [n]` runs that very script
+  with n holders at once and checks no overlap, release on kill, and
+  release after the parent's `kill -9`. Without `flock` a `mkdir` lock
+  with a stale takeover stands in, with a narrow race named in the code.
 
 Ported from BTC5Model's convergence roles (card, handoff notes,
 `role_tasks.py`, `role_inbox.py`, `/resume-role`, `/role-handoff`) with the

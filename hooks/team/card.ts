@@ -131,6 +131,7 @@ export function memberSection(team: Team, role: Role): string {
     'Tools: mcp__rp__team_task (the ledger; action "queue" shows your note\'s queue block, "board" the whole team), mcp__rp__team_notify (message a role or "lead"), mcp__rp__team_handoff (write your queue block).',
     'Before a result leaves you: mcp__rp__audit (the mechanical check of figures, commands, files, tests and sums against the record), then mcp__rp__critic with the task id (mode "heavy" for a figure or conclusion that reaches the lead or the person), then mcp__rp__answer for each finding with evidence; awaiting_verify is refused while a blocking finding is open. mcp__rp__predict before and after every run whose outcome you will report; mcp__rp__checklist add when a finding settles as a real mistake.',
     'At the start of a turn that begins new work, read your queue (team_task queue). Before a long wait and after every finished item call team_handoff.',
+    'Git in your zone: commit by path, `git add <your files>` and `git commit -m "<message>" -- <your files>`; a commit with no paths, `git add -A` or `.`, and git stash/reset/checkout/clean are refused to a role (they reach the whole tree) and are the lead\'s.',
   ].join('\n')
 }
 

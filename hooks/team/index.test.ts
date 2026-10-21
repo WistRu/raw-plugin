@@ -147,7 +147,7 @@ test('what a Bash command writes is read off its text, quotes honoured', async (
 // What the engine answers beneath the plugin. With `bound`, the registry
 // names this session as the builder of the demo team and the files are
 // there; without, it is a session of no team.
-function engine(on: Parameters<Parameters<typeof test>[1]>[1], bound = false) {
+function engine(on: Parameters<Parameters<typeof test>[1]>[1], bound = false, world: { flock?: boolean } = {}) {
   const t = team()
   const files = new Map<string, string>()
   if (bound) files.set(`${DIR}/team.json`, JSON.stringify(t))
@@ -183,9 +183,9 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], bound = false) {
   on('clock.sleep', () => ({ value: undefined }))
   on('process.run', (_, e) => {
     runs.push([...e.argv])
-    // this world has no flock: the mkdir lock is what the test can see
+    // whether this world has flock decides which lock the test sees
     if (e.argv[0] === 'sh' && String(e.argv[2]).includes('command -v flock'))
-      return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+      return { value: { exitCode: world.flock ? 0 : 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     // `mv tmp target` is how a JSON file is written: the world keeps it
     if (e.argv[0] === 'mv' && e.argv[1] === '-f') {
       const text = files.get(String(e.argv[2]))
@@ -253,6 +253,29 @@ test('a member edits inside its zone and its own note, nowhere else', async ($, 
   expect((await bash('rm -rf docs')).deny).toMatch(/would write docs/)
   expect((await bash('cd ../elsewhere && touch src/x.ts')).deny).toMatch(/would write \.\.\/elsewhere\/src\/x\.ts/)
   expect((await bash('touch src/new.ts')).deny).toBeUndefined()
+})
+
+test('with flock, a ledger write holds the lock through the child the stream ends', async ($, on) => {
+  engine(on, true, { flock: true })
+  const spawns: string[][] = []
+  let ended = false
+  on('process.spawn', async function* (_, e) {
+    spawns.push([...e.argv])
+    try {
+      yield { stream: 'stdout' as const, text: 'held\n' }
+      await new Promise<void>(() => {})
+    } finally {
+      ended = true
+    }
+    return { code: null, signal: 'SIGTERM' }
+  })
+  await start($)
+  const added = await $.tool.call({ tool: 'mcp__rp__team_task', action: 'add', title: 'x', owner: 'builder' } as never)
+  expect(added.text).toMatch(/^T-0001 ready: x/)
+  const hold = spawns.find(a => a[0] === 'sh' && a[3] === 'hold')
+  expect(hold?.[4]).toBe(`${DIR}/.flock`)
+  expect(hold?.[2]).toMatch(/flock -w "\$2" 9/)
+  expect(ended).toBe(true)
 })
 
 test('a ledger write takes the folder lock in a process and gives it back (the mkdir lock; the flock one is hooks/team/lock.test.sh)', async ($, on) => {

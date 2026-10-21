@@ -84,12 +84,17 @@ exit 0
 
 // The lock proper, where `flock` exists (util-linux; every Linux): the
 // child process opens `<dir>/.flock` on its own descriptor 9, takes the
-// kernel's lock on it, says `held`, and becomes `sleep` by exec, so one
-// process, the stream's own child, holds the lock; ending the stream
-// kills it, which releases the lock. (`flock <file> <cmd>` would hold the
-// lock in a grandchild that outlives the kill.) A session that dies
-// releases it the same way, so there is no stale lock to take over.
-const HOLD_SH = `exec 9>"$1" || exit 1; flock -w "$2" 9 || exit 1; echo held; exec sleep 1000000`
+// kernel's lock on it, says `held`, and then watches its parent, the
+// session's process: it lives while the parent does and exits within a
+// second of the parent's death, which releases the lock. Ending the stream
+// kills it the same way. So neither a killed session nor a crashed one
+// (an OOM, a kill -9) leaves a lock behind, and there is nothing stale to
+// take over. (`flock <file> <cmd>` would hold the lock in a grandchild
+// that outlives the kill; `exec sleep` would hold it for ever after a
+// crash; the `sleep 1` of the watch closes descriptor 9, or it would keep
+// the lock up to a second after the kill.) hooks/team/lock.test.sh runs
+// this very text.
+const HOLD_SH = `exec 9>"$1" || exit 1; flock -w "$2" 9 || exit 1; echo held; p=$PPID; while kill -0 "$p" 2>/dev/null; do sleep 1 9>&-; done`
 let flockKnown: boolean | undefined
 
 async function hasFlock($: EngineInterface): Promise<boolean> {
