@@ -136,3 +136,16 @@ export async function trackedCode(host: Host, repo: Repo, real: string): Promise
 }
 
 export { lines }
+
+// Where the session stands, for the prompt section.
+export type Place =
+  | { kind: 'main'; root: string }
+  | { kind: 'worktree'; path: string; branch?: string; ahead: number; isDirty: boolean }
+
+export async function placeOf(host: Host, repo: Repo, cwdReal: string): Promise<Place> {
+  const tree = ownerOf(repo, cwdReal)
+  if (!tree || isMain(repo, tree)) return { kind: 'main', root: repo.root }
+  const count = await host.run(['git', 'rev-list', '--count', `${repo.main}..HEAD`], tree.path)
+  const status = await host.run(['git', 'status', '--porcelain'], tree.path)
+  return { kind: 'worktree', path: tree.path, branch: tree.branch, ahead: Number(count.out.trim()) || 0, isDirty: status.out.trim().length > 0 }
+}

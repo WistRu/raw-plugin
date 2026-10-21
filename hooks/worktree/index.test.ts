@@ -4,7 +4,8 @@ import { writeTargets } from '../team/bashzone'
 import { refusal } from './guard'
 import type { Writes } from './guard'
 import type { Host, Ran } from './repo'
-import { parseConfig, readRepo } from './repo'
+import { parseConfig, placeOf, readRepo } from './repo'
+import { sectionText } from './section'
 
 // A repository made of answers: the git calls this module makes, answered
 // from a few facts; `answers` overrides one call by `<cwd>: <argv>`.
@@ -151,4 +152,25 @@ test('the config file: three keys, anything else is refused by name', async () =
   const repo = await readRepo(fake({ ...REPO, files: { '/r/.claude/rp-worktree.json': '[]' } }), '/r')
   expect(repo?.configError).toBe('not a JSON object')
   expect(repo?.config).toEqual({})
+})
+
+test('the section: the rule in three lines and where the session stands', async () => {
+  const host = fake({
+    ...REPO,
+    answers: {
+      '/r/.claude/worktrees/feat: git rev-list --count main..HEAD': ran('2\n'),
+      '/r/.claude/worktrees/feat: git status --porcelain': ran(' M src/a.ts\n'),
+    },
+  })
+  const repo = await readRepo(host, '/r')
+  if (!repo) throw new Error('no repo')
+  const inMain = sectionText(repo, await placeOf(host, repo, '/r/src'), true)
+  expect(inMain.split('\n').length).toBe(4)
+  expect(inMain).toMatch(/EnterWorktree/)
+  expect(inMain).toMatch(/mcp__rp__land/)
+  expect(inMain.split('\n')[3]).toBe('Here: main tree of /r: code edits are refused, enter a worktree first.')
+  expect(sectionText(repo, await placeOf(host, repo, '/r'), false)).toMatch(/guard is off for this session \(\/worktree on restores it\)/)
+  const inTree = sectionText(repo, await placeOf(host, repo, '/r/.claude/worktrees/feat/src'), true, 'Prune: something')
+  expect(inTree.split('\n')[3]).toBe('Here: worktree /r/.claude/worktrees/feat, branch feat, 2 commits not on main, dirty.')
+  expect(inTree.split('\n')[4]).toBe('Prune: something')
 })

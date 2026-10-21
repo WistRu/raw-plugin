@@ -9,13 +9,14 @@
 // nothing of that project built in.
 
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, On } from 'claude-code'
+import type { EngineInterface, On, PromptComposeSection } from 'claude-code'
 
 import { writeTargets } from '../team/bashzone'
 import type { Writes } from './guard'
 import { refusal } from './guard'
 import type { Host, Repo } from './repo'
-import { readRepo } from './repo'
+import { placeOf, readRepo } from './repo'
+import { sectionText } from './section'
 
 export const isGuardOn = atom({ plugin: 'rp', key: 'isWorktreeGuardOn' } as const, true)
 
@@ -24,6 +25,9 @@ export const isGuardOn = atom({ plugin: 'rp', key: 'isWorktreeGuardOn' } as cons
 const REPO_FRESH_MS = 10_000
 let cached: { root: string; at: number; repo: Repo | undefined } | undefined
 let failedOnce = false
+// The section's text, computed at the session's start and at each turn's
+// start of the main loop, never per request: undefined when silent.
+let section: string | undefined
 
 export function hostOf($: EngineInterface): Host {
   return {
@@ -106,6 +110,7 @@ async function worktreeCommand($: EngineInterface, args: string): Promise<{ text
   const word = (args ?? '').trim().split(/\s+/)[0] ?? ''
   if (word === 'off' || word === 'on') {
     await update($, isGuardOn, () => word === 'on')
+    await computeSection($).catch(() => undefined)
     return { text: word === 'on' ? 'Worktree guard on for this session: code edits in the main tree are refused.' : 'Worktree guard off for this session: edits in the main tree go through. /worktree on restores it.' }
   }
   const repo = await repoOf($)
@@ -114,10 +119,31 @@ async function worktreeCommand($: EngineInterface, args: string): Promise<{ text
   return { text: `Worktree guard ${on ? 'on' : 'off'} in ${repo.root} (main branch ${repo.main}). Usage: /worktree on | off` }
 }
 
+async function computeSection($: EngineInterface): Promise<void> {
+  forget()
+  const repo = await repoOf($)
+  if (!repo) {
+    section = undefined
+    return
+  }
+  const host = hostOf($)
+  const cwd = await $.session.cwd()
+  const place = await placeOf(host, repo, (await host.real(cwd)) ?? cwd)
+  section = sectionText(repo, place, await read($, isGuardOn))
+}
+
+// The rule and the place; hooks/register.ts adds it in the plugin's one
+// prompt.compose hook.
+export async function worktreeSection($: EngineInterface): Promise<PromptComposeSection | undefined> {
+  return section === undefined ? undefined : { id: `${$.plugin.name}:worktree`, text: section, scope: 'session' }
+}
+
 // Called from the plugin's one session.start hook (hooks/register.ts).
 export async function startWorktree($: EngineInterface): Promise<void> {
   cached = undefined
   failedOnce = false
+  section = undefined
+  await computeSection($).catch(err => $.ui.log(`${$.plugin.name}: the worktree section could not be computed: ${String(err)}`, { to: 'debug' }))
   await $.command.register({ name: 'worktree', description: 'The worktree guard: "off" lifts it for this session, "on" restores it', argumentHint: 'on | off' })
     .catch(err => $.ui.log(`${$.plugin.name}: /worktree not registered: ${String(err)}`, { to: 'debug' }))
 }
@@ -143,6 +169,12 @@ export function registerWorktree(on: On): void {
   })
 
   // A worktree came or went: read the repository afresh.
+  // Once a turn of the main loop: where the session stands now.
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) await computeSection($).catch(err => $.ui.log(`${$.plugin.name}: the worktree section could not be computed: ${String(err)}`, { to: 'debug' }))
+    return next(e)
+  })
+
   on('tool.call', { tool: /^(EnterWorktree|ExitWorktree)$/ }, async ($, e, next) => {
     const done = await next(e)
     forget()

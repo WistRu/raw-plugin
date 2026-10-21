@@ -215,6 +215,14 @@ the landing.
   the repository lets the write through and says so once.
 - **`/worktree off`** and **`/worktree on`** lift and restore the guard for
   this session (`rp.isWorktreeGuardOn` in `$.state`).
+- **The prompt section**: the rule in three lines and where the session
+  stands, computed at the session's start and at the start of each turn of
+  the main loop, never per request: `Here: main tree of <repo>: code edits
+  are refused, enter a worktree first.` or `Here: worktree <path>, branch
+  <b>, <n> commits not on <main>, clean|dirty.` The text changes when the
+  place does (a commit, an edit), and a changed section is re-sent uncached
+  on the next request after it, so it costs a cache write of the
+  conversation once per turn in which it changed.
 - **`.claude/rp-worktree.json`** in the main tree, optional, three keys and
   no others: `code` (path prefixes that alone count as code; everything
   else is free), `preLand` and `postLand` (below). A file that does not
