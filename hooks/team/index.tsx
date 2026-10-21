@@ -98,7 +98,7 @@ async function sendByApp($: EngineInterface, address: string, text: string): Pro
   const tools = (await $.tool.list().catch(() => [])).map(t => t.name)
   if (!tools.includes(SEND_MESSAGE)) return false
   const ran = await $.tool.call({ tool: SEND_MESSAGE, session_id: address, message: text } as never).catch(() => undefined)
-  return Boolean(ran && 'text' in ran && ran.text && /delivered|queued/i.test(ran.text) && !ran.isError)
+  return Boolean(ran && 'text' in ran && ran.text && /\b(delivered|queued)\b/i.test(ran.text) && !/not delivered|refused|no such|unknown|failed/i.test(ran.text) && !ran.isError)
 }
 
 // Writes this session's engine id into the roster, as the lead or a role,
