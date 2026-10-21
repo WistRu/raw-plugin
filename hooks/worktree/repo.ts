@@ -13,6 +13,7 @@ export type Host = {
   real: (path: string) => Promise<string | undefined>
   // A file's text, undefined when it cannot be read.
   read: (path: string) => Promise<string | undefined>
+  exists: (path: string) => Promise<boolean>
 }
 
 // `.claude/rp-worktree.json` in the main tree; every key optional.

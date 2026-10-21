@@ -3,6 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import { writeTargets } from '../team/bashzone'
 import { refusal } from './guard'
 import { land } from './land'
+import { prune, pruneLine, scan } from './prune'
 import type { Writes } from './guard'
 import type { Host, Ran } from './repo'
 import { parseConfig, placeOf, readRepo } from './repo'
@@ -20,6 +21,8 @@ type World = {
   // tracked files, relative to the main tree
   tracked: string[]
   files?: Record<string, string>
+  // worktree folders git still lists that are gone from the disk
+  gone?: string[]
   answers?: Record<string, Ran | ((n: number) => Ran)>
 }
 
@@ -37,6 +40,7 @@ function fake(w: World): Host & { calls: string[] } {
     calls,
     real: async p => real(p),
     read: async p => w.files?.[p],
+    exists: async p => !(w.gone ?? []).includes(p),
     run: async (argv, cwd) => {
       const key = `${cwd}: ${argv.join(' ')}`
       calls.push(key)
@@ -249,4 +253,78 @@ test('the landing keeps the worktree when the session cannot leave it, and refus
   const broken = await readRepo(fake({ ...REPO, files: { '/r/.claude/rp-worktree.json': '{"gate": 1}' } }), '/r')
   if (!broken) throw new Error('no repo')
   expect(await land(host, broken, WT, { leave: async () => true })).toMatch(/rp-worktree\.json does not parse \(unknown key/)
+})
+
+test('pruning: landed by content, never the unsafe ones, -D only beside its empty cherry list', async () => {
+  const world: World = {
+    branches: ['main', 'feat', 'reb', 'wip', 'fresh', 'dirty', 'mine', 'old', 'side'],
+    trees: [
+      { path: '/r', branch: 'main' },
+      { path: '/w/feat', branch: 'feat' },
+      { path: '/w/fresh', branch: 'fresh' },
+      { path: '/w/dirty', branch: 'dirty' },
+      { path: '/w/mine', branch: 'mine' },
+      { path: '/w/gate', isDetached: true },
+      { path: '/w/old', branch: 'old' },
+    ],
+    gone: ['/w/old'],
+    tracked: [],
+    answers: {
+      '/r: git worktree prune': ran(''),
+      '/r: git symbolic-ref --quiet --short HEAD': ran('main\n'),
+      '/r: git for-each-ref --format=%(refname:short) refs/heads/': ran('dirty\nfeat\nfresh\nmain\nmine\nold\nreb\nside\nwip\n'),
+      // landed by fast-forward: nothing of its own left, and a history of commits
+      '/r: git cherry main feat': ran(''),
+      '/r: git reflog show --format=%gs refs/heads/feat': ran('commit: b\ncommit: a\nbranch: Created from HEAD\n'),
+      '/w/feat: git status --porcelain': ran(''),
+      '/r: du -sh /w/feat': ran('1.5G\t/w/feat\n'),
+      '/r: git merge-base --is-ancestor feat main': ran(''),
+      // landed by rebase: every patch is on main under another sha
+      '/r: git cherry main reb': ran('- 1111\n- 2222\n'),
+      '/r: git merge-base --is-ancestor reb main': ran('', 1),
+      // not landed
+      '/r: git cherry main wip': ran('- 3333\n+ 4444\n'),
+      // just entered, no commit yet
+      '/r: git cherry main fresh': ran(''),
+      '/r: git reflog show --format=%gs refs/heads/fresh': ran('branch: Created from HEAD\n'),
+      // landed, but the tree has an untracked file
+      '/r: git cherry main dirty': ran('- 5555\n'),
+      '/w/dirty: git status --porcelain': ran('?? notes.txt\n'),
+      // landed, but this session runs in it
+      '/r: git cherry main mine': ran('- 6666\n'),
+      // landed, its folder already gone: only the branch goes
+      '/r: git cherry main old': ran('- 7777\n'),
+      '/r: git merge-base --is-ancestor old main': ran(''),
+      '/r: git cherry main side': ran('+ 8888\n'),
+      '/r: git worktree remove /w/feat': ran(''),
+      '/r: git branch -d feat': ran(''),
+      '/r: git branch -D reb': ran(''),
+      '/r: git branch -d old': ran(''),
+    },
+  }
+  const host = fake(world)
+  const repo = await readRepo(host, '/r')
+  if (!repo) throw new Error('no repo')
+  const s = await scan(host, repo, '/w/mine/src')
+  expect(s.landed.map(l => `${l.branch} ${l.flag}`)).toEqual(['feat -d', 'old -d', 'reb -D'])
+  expect(pruneLine(s)).toBe('Prune: 3 landed branches can go: feat (worktree /w/feat, 1.5G), old (worktree /w/old), reb; /worktree prune (mcp__rp__worktree_prune) removes them.')
+  expect(s.kept.join('\n')).toMatch(/fresh: no commit of its own yet/)
+  expect(s.kept.join('\n')).toMatch(/dirty: landed, but its worktree \/w\/dirty has 1 changed or untracked path/)
+  expect(s.kept.join('\n')).toMatch(/mine: landed, but this session runs in its worktree/)
+
+  const text = await prune(host, repo, '/w/mine/src')
+  expect(text).toMatch(/- removed worktree \/w\/feat \(1\.5G\)\n- deleted branch feat \(-d: an ancestor of the main branch\)/)
+  expect(text).toMatch(/- deleted branch reb \(-D: not an ancestor; git cherry lists no unlanded commit: - 1111, - 2222\)/)
+  expect(text).toMatch(/- deleted branch old \(-d/)
+  // never --force, never the detached tree, the unlanded, the dirty, the fresh or the own one
+  const writes = host.calls.filter(c => /worktree remove|branch -[dD]/.test(c))
+  expect(writes).toEqual(['/r: git worktree remove /w/feat', '/r: git branch -d feat', '/r: git branch -d old', '/r: git branch -D reb'])
+  expect(host.calls.some(c => c.includes('--force'))).toBe(false)
+
+  // the branch checked out in the main tree is never a candidate
+  const onSide = fake({ ...world, answers: { ...world.answers, '/r: git symbolic-ref --quiet --short HEAD': ran('feat\n') } })
+  const r2 = await readRepo(onSide, '/r')
+  if (!r2) throw new Error('no repo')
+  expect((await scan(onSide, r2, '/w/mine')).landed.map(l => l.branch)).toEqual(['old', 'reb'])
+  expect(pruneLine({ landed: [], kept: ['x'] })).toBeUndefined()
 })

@@ -240,6 +240,22 @@ the landing.
   goes through `$.process.run` by argument vector, no shell; `preLand` and
   `postLand` written as one string run under `sh -c`, as a list by argument
   vector, ten minutes at most, outside the resource guard's slice.
+- **Pruning** (`/worktree prune`, or the tool `mcp__rp__worktree_prune`):
+  a branch is landed when `git cherry <main> <branch>` lists no `+` commit,
+  content and not ancestry, so a branch landed by a rebase counts. At the
+  session's start the landed branches, their worktrees and each one's size
+  (`du -sh`) are one `Prune:` line of the prompt section, nothing when
+  there is nothing to prune. The prune removes each landed branch's
+  worktree with `git worktree remove` and deletes the branch with `git
+  branch -d`, or `-D` for a branch landed by rebase, printed beside its
+  cherry list as the proof; never `--force`. Never touched: the main branch
+  and the branch checked out in the main tree; a detached worktree; a
+  worktree with any change or untracked file; the worktree the session runs
+  in; a branch with no commit of its own yet (one reflog entry, its
+  creation: a worktree just entered, maybe by another session). Ported from
+  BTC5Model's `scripts/prune_landed_branches.sh` without that project's own
+  refusal for cited commits. A repository with its reflog turned off keeps
+  every branch with no commit of its own, landed or not.
 - **Repository hooks do not fire from `/land`**: the engine runs git with
   the repository's hooks off, so a project's `post-merge` or
   `post-checkout` hook is skipped by the landing. `postLand` is the place for

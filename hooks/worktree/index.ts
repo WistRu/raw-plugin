@@ -15,6 +15,7 @@ import { writeTargets } from '../team/bashzone'
 import type { Writes } from './guard'
 import { refusal } from './guard'
 import { land } from './land'
+import { prune, pruneLine, scan } from './prune'
 import type { Host, Repo } from './repo'
 import { placeOf, readRepo } from './repo'
 import { sectionText } from './section'
@@ -29,6 +30,8 @@ let failedOnce = false
 // The section's text, computed at the session's start and at each turn's
 // start of the main loop, never per request: undefined when silent.
 let section: string | undefined
+// What can be pruned, read once at the session's start (and after a prune).
+let pruneText: string | undefined
 
 export function hostOf($: EngineInterface): Host {
   return {
@@ -50,6 +53,7 @@ export function hostOf($: EngineInterface): Host {
       }
     },
     read: path => $.fs.read(path).then(t => t, () => undefined),
+    exists: path => $.fs.exists(path).catch(() => false),
   }
 }
 
@@ -134,8 +138,31 @@ async function landHere($: EngineInterface, agentId?: string): Promise<string> {
   }
 }
 
+async function scanPrune($: EngineInterface): Promise<void> {
+  const repo = await repoOf($)
+  if (!repo) return
+  const host = hostOf($)
+  const cwd = await $.session.cwd()
+  pruneText = pruneLine(await scan(host, repo, (await host.real(cwd)) ?? cwd))
+}
+
+async function pruneHere($: EngineInterface): Promise<string> {
+  const repo = await repoOf($)
+  if (!repo) return 'Nothing to prune: not in a git repository with a main branch (origin/HEAD, main or master).'
+  const host = hostOf($)
+  const cwd = await $.session.cwd()
+  try {
+    return await prune(host, repo, (await host.real(cwd)) ?? cwd)
+  } finally {
+    forget()
+    pruneText = undefined
+    await computeSection($).catch(() => undefined)
+  }
+}
+
 async function worktreeCommand($: EngineInterface, args: string): Promise<{ text: string }> {
   const word = (args ?? '').trim().split(/\s+/)[0] ?? ''
+  if (word === 'prune') return { text: await pruneHere($).catch(err => `prune: ${String(err)}`) }
   if (word === 'off' || word === 'on') {
     await update($, isGuardOn, () => word === 'on')
     await computeSection($).catch(() => undefined)
@@ -144,7 +171,7 @@ async function worktreeCommand($: EngineInterface, args: string): Promise<{ text
   const repo = await repoOf($)
   const on = await read($, isGuardOn)
   if (!repo) return { text: 'Not in a git repository with a main branch (origin/HEAD, main or master): the worktree module is silent here.' }
-  return { text: `Worktree guard ${on ? 'on' : 'off'} in ${repo.root} (main branch ${repo.main}). Usage: /worktree on | off` }
+  return { text: `Worktree guard ${on ? 'on' : 'off'} in ${repo.root} (main branch ${repo.main}). Usage: /worktree on | off | prune` }
 }
 
 async function computeSection($: EngineInterface): Promise<void> {
@@ -157,7 +184,7 @@ async function computeSection($: EngineInterface): Promise<void> {
   const host = hostOf($)
   const cwd = await $.session.cwd()
   const place = await placeOf(host, repo, (await host.real(cwd)) ?? cwd)
-  section = sectionText(repo, place, await read($, isGuardOn))
+  section = sectionText(repo, place, await read($, isGuardOn), pruneText)
 }
 
 // The rule and the place; hooks/register.ts adds it in the plugin's one
@@ -171,14 +198,21 @@ export async function startWorktree($: EngineInterface): Promise<void> {
   cached = undefined
   failedOnce = false
   section = undefined
+  pruneText = undefined
+  await scanPrune($).catch(err => $.ui.log(`${$.plugin.name}: the landed branches could not be listed: ${String(err)}`, { to: 'debug' }))
   await computeSection($).catch(err => $.ui.log(`${$.plugin.name}: the worktree section could not be computed: ${String(err)}`, { to: 'debug' }))
-  await $.command.register({ name: 'worktree', description: 'The worktree guard: "off" lifts it for this session, "on" restores it', argumentHint: 'on | off' })
+  await $.command.register({ name: 'worktree', description: 'The worktree guard: "off" lifts it for this session, "on" restores it; "prune" removes landed branches and their worktrees', argumentHint: 'on | off | prune' })
     .catch(err => $.ui.log(`${$.plugin.name}: /worktree not registered: ${String(err)}`, { to: 'debug' }))
   await $.command.register({ name: 'land', description: 'Land this worktree: fast-forward it onto the main branch, then remove the worktree and its branch' })
     .catch(err => $.ui.log(`${$.plugin.name}: /land not registered: ${String(err)}`, { to: 'debug' }))
   await $.tool.register({
     name: 'land',
     description: 'Land the worktree this session works in: refuses unless the worktree is clean, the main tree has the main branch checked out and is clean, and the branch contains the main branch (rebase first otherwise); runs preLand, merges with --ff-only, runs postLand, removes the worktree and deletes the branch, and reports the landed commits.',
+    inputSchema: { type: 'object', properties: {} },
+  })
+  await $.tool.register({
+    name: 'worktree_prune',
+    description: 'Remove the landed branches (git cherry against the main branch lists no unlanded commit) and their clean worktrees, without --force; never the branch checked out in the main tree, a detached worktree, a dirty one, this session\'s own, or a branch with no commit of its own yet.',
     inputSchema: { type: 'object', properties: {} },
   })
 }
@@ -188,6 +222,7 @@ export function registerWorktree(on: On): void {
   on('command.run', { command: 'rp:worktree' }, ($, e) => worktreeCommand($, e.args))
   on('command.run', { command: 'land' }, async $ => ({ text: await landHere($).catch(err => `Not landed: ${String(err)}`) }))
   on('command.run', { command: 'rp:land' }, async $ => ({ text: await landHere($).catch(err => `Not landed: ${String(err)}`) }))
+  on('tool.call', { tool: 'mcp__rp__worktree_prune' }, async $ => answer(await pruneHere($).catch(err => `prune: ${String(err)}`)))
   on('tool.call', { tool: 'mcp__rp__land' }, async ($, e) => answer(await landHere($, e.agentId).catch(err => `Not landed: ${String(err)}`)))
 
   // MultiEdit is matched by name: this build ships no such tool, an older one may
