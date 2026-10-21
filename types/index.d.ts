@@ -33,8 +33,17 @@ export type Snapshot = {
   topMem: Program[]
 }
 
+// What the team pane draws in the lead's session: the roles with their last
+// state and the board text.
+export type TeamView = {
+  slug: string
+  goal: string
+  roles: { name: string; isStarted: boolean; isActive: boolean; context?: number; lastAt?: string }[]
+  board: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    rp: { snap: Snapshot | null; isLineOn: boolean }
+    rp: { snap: Snapshot | null; isLineOn: boolean; team: TeamView | null }
   }
 }

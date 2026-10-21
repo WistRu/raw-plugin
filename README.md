@@ -51,6 +51,47 @@ Known limits: processes the plugin did not start are only counted, never
 capped; the macOS and Windows probes were written without a machine to run
 them on; inside the slice `cd` does not carry over to the next command.
 
+### team
+
+A team of sessions for one task, drafted per task and tied together by a
+folder.
+
+- **`/team <task>`** has the model draft 2-6 roles (lane, zone of paths it may
+  edit, deliverable, verifier) and the first tasks, show them, then call
+  `mcp__rp__team_create`, which asks once more and lays the folder out:
+  `.claude/teams/<slug>/` in the project (`CARD.md`, `tasks.json`,
+  `handoff/<role>.md`, `inbox/<role>/`, `notify.sh`, a `.gitignore` of `*`).
+  The session that created the team is its lead.
+- **One session per role** through the desktop app's `start_session` tool;
+  in a terminal, one subagent per role instead. A member's session reads its
+  card, zone, rules and the queue of its note in the system prompt; the lead
+  reads the board.
+- **The ledger** (`mcp__rp__team_task`): `add`, `set`, `list`, `board`.
+  `blocked` and `ready` follow from `depends_on`; `done` wakes every task that
+  waited, `awaiting_verify` wakes the verifier, `failed`/`dropped` ask the
+  dependents' owners to decide; a task with a verifier is marked `done` only
+  by that verifier or the lead.
+- **Waking a role** (`mcp__rp__team_notify`, or `sh notify.sh <role> "<what>"`
+  from a shell job): an event file in the role's inbox plus a message to its
+  session; what no session received, the lead's session delivers every
+  minute.
+- **The handoff note** (`mcp__rp__team_handoff`): the role writes its queue
+  block; the plugin adds the stamp, the session id and the context reading,
+  and after every turn leaves `handoff/<role>.state.json` for the board.
+  Deliveries and the session's end are appended under the note's `## Inbox`.
+- **The zone guard**: a member's Edit, Write, MultiEdit or NotebookEdit outside
+  its zone and the team folder is refused with the owner to ask.
+- **`/team status`** draws the board (a pane in the lead's session,
+  `mcp__rp__team_status` for the model); **`/team close`** ends the team and
+  asks for the final report in one schema: done · worked or not · next.
+
+Ported from BTC5Model's convergence roles (card, handoff notes,
+`role_tasks.py`, `role_inbox.py`, `/resume-role`, `/role-handoff`) with the
+hourly ticks, the clear-and-resend dance and the project's own rules left
+out. Not yet tried against a live desktop: whether `start_session` can be
+called from a hook, and whether a message a plugin sends wakes the other
+session, are the first two things to check.
+
 ## Install
 
 ```

@@ -1,4 +1,4 @@
-import type { On, EngineInterface, PluginOptions } from 'claude-code'
+import type { On, EngineInterface, PluginOptions, PromptComposeSection } from 'claude-code'
 import { atom, read } from 'claude-code'
 import type { Snapshot } from '../../types'
 import { latest, sampleCount } from '../sysmon/index'
@@ -341,13 +341,13 @@ async function startNow($: EngineInterface, _options: PluginOptions): Promise<vo
   })
 }
 
-export function registerResourceGuard(on: On): void {
-  // The model reads the machine once, in the system prompt: cheap and cached.
-  on('prompt.compose', async ($, e, next) => {
-    const { sections } = await next(e)
-    const p = profile
-    if (!p) return { sections }
-    const text = [
+// The model reads the machine once, in the system prompt: cheap and cached.
+// One section, or nothing before the first probe; hooks/register.ts adds it
+// in the plugin's one prompt.compose hook.
+export function machineSection($: EngineInterface): PromptComposeSection | undefined {
+  const p = profile
+  if (!p) return undefined
+  const text = [
       `# Machine resources (${$.plugin.name})`,
       `This machine: ${p.os}, ${p.cores} cores, ${gb(p.mem_total)} GB RAM, ${p.swap_total > 0 ? gb(p.swap_total) + ' GB swap' : 'no swap'}.`,
       `Every Bash command except plain file, text and git work counts as heavy: it is held with the current figures while less than ${gb(reserve(p))} GB RAM is available (plus what the command took last time), all ${p.cores} cores are busy or the disk is ${DISK_FULL_PCT}% full. Then wait, or run fewer in parallel, and retry. Heavy commands start one at a time.`,
@@ -355,10 +355,11 @@ export function registerResourceGuard(on: On): void {
       sliceReady
         ? `A heavy command runs inside the memory slice ${SLICE} by itself (slowed down above ${gb(p.mem_total * SLICE_HIGH_SHARE)} GB, killed at ${gb(p.mem_total * SLICE_MAX_SHARE)} GB: exit 137 means that, rerun with fewer jobs). Write the plain command, never a wrapper such as \`heavy\`. Inside it \`cd\` does not carry over to the next command.`
         : `There is no memory cap here: when RAM runs out, the newest heavy command is stopped so the desktop survives. Write the plain command; there is no wrapper to add.`,
-    ].join('\n')
-    return { sections: [...sections, { id: `${$.plugin.name}:machine`, text, scope: 'session' }] }
-  })
+  ].join('\n')
+  return { id: `${$.plugin.name}:machine`, text, scope: 'session' }
+}
 
+export function registerResourceGuard(on: On): void {
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const command = stripOldWrapper(e.command)
     if (isLight(command)) return next({ ...e, command })

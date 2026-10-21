@@ -1,8 +1,8 @@
 {
   "name": "rp",
   "displayName": "Raw Plugin",
-  "version": "0.4.0",
-  "description": "Raw Plugin: the operator's own harness for Claude Code. A resource guard that measures the machine, holds heavy commands without headroom and runs them inside a memory slice, and a live system monitor pane; more modules to come.",
+  "version": "0.5.0",
+  "description": "Raw Plugin: the operator's own harness for Claude Code. A resource guard that measures the machine, holds heavy commands without headroom and runs them inside a memory slice; a live system monitor pane; a team of sessions per task (/team).",
   "author": { "name": "wist" },
   "types": "./types/index.d.ts"
 }

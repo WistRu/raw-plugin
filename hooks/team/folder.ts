@@ -1,0 +1,176 @@
+// The team folder on disk, through `$.fs`: where it is, what is in it, and
+// the small reads and writes every hook shares. Nothing here decides.
+
+import type { EngineInterface } from 'claude-code'
+
+import type { Team } from './card'
+import { cardText } from './card'
+import type { Ledger } from './ledger'
+import { emptyLedger } from './ledger'
+
+export const TEAMS = '.claude/teams'
+
+// Where teams live for this session: under the project root when there is
+// one, else under the user's home.
+export async function teamsDir($: EngineInterface): Promise<string> {
+  const root = await $.session.root()
+  const home = (await $.env.get('HOME').catch(() => undefined)) ?? (await $.env.get('USERPROFILE').catch(() => undefined))
+  const repo = await $.session.repo().catch(() => null)
+  const base = repo ? root : (typeof home === 'string' && home.length > 0 ? `${home}/.claude` : root)
+  return repo ? `${base}/${TEAMS}` : `${base}/teams`
+}
+
+export const teamFile = (dir: string) => `${dir}/team.json`
+export const ledgerFile = (dir: string) => `${dir}/tasks.json`
+export const noteFile = (dir: string, role: string) => `${dir}/handoff/${role}.md`
+export const stateFile = (dir: string, role: string) => `${dir}/handoff/${role}.state.json`
+export const inboxDir = (dir: string, role: string) => `${dir}/inbox/${role}`
+
+export async function readJson<T>($: EngineInterface, path: string, fallback: T): Promise<T> {
+  try {
+    return JSON.parse(await $.fs.read(path)) as T
+  } catch {
+    return fallback
+  }
+}
+
+export function writeJson($: EngineInterface, path: string, value: unknown): Promise<void> {
+  return $.fs.write(path, JSON.stringify(value, null, 2) + '\n')
+}
+
+export function readTeam($: EngineInterface, dir: string): Promise<Team | null> {
+  return readJson<Team | null>($, teamFile(dir), null)
+}
+export function writeTeam($: EngineInterface, team: Team): Promise<void> {
+  return writeJson($, teamFile(team.dir), team)
+}
+export function readLedger($: EngineInterface, dir: string): Promise<Ledger> {
+  return readJson<Ledger>($, ledgerFile(dir), emptyLedger())
+}
+export function writeLedger($: EngineInterface, dir: string, ledger: Ledger): Promise<void> {
+  return writeJson($, ledgerFile(dir), ledger)
+}
+
+// Every team folder under the teams dir, newest first; a folder without
+// team.json is skipped.
+export async function listTeams($: EngineInterface): Promise<Team[]> {
+  const base = await teamsDir($)
+  const entries = await $.fs.list(base).catch(() => [])
+  const teams: Team[] = []
+  for (const e of entries) {
+    if (e.kind !== 'dir') continue
+    const t = await readTeam($, `${base}/${e.name}`)
+    if (t) teams.push(t)
+  }
+  return teams.sort((a, b) => b.created.localeCompare(a.created))
+}
+
+// The team this session belongs to and its role in it: the roster names
+// the session id (the lead's, or a member's once started).
+export type Membership = { team: Team; role: string | 'lead' }
+
+export async function membership($: EngineInterface): Promise<Membership | undefined> {
+  const id = await $.session.id()
+  for (const team of await listTeams($)) {
+    if (team.closed) continue
+    if (team.lead === id) return { team, role: 'lead' }
+    const role = team.roles.find(r => r.sessionId === id)
+    if (role) return { team, role: role.name }
+  }
+  return undefined
+}
+
+const NOTIFY_SH = `#!/bin/sh
+# Wake a role of this team from a shell job: sh notify.sh <role> "<what>" [<path>]
+# Writes one event file into the role's inbox; the lead's session delivers it.
+role="$1"; what="$2"; path="$3"
+dir="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "$dir/inbox/$role"
+stamp="$(date -u +%Y-%m-%dT%H%M%SZ)"
+f="$dir/inbox/$role/$stamp-job.md"
+{ echo "from: job"; echo "at: $stamp"; [ -n "$path" ] && echo "path: $path"; echo; echo "$what"; } > "$f.tmp" && mv "$f.tmp" "$f"
+`
+
+// Lays the folder out: the card, an empty ledger, a note per role, the
+// inboxes, notify.sh, and a .gitignore so nothing of it is ever committed.
+export async function layOut($: EngineInterface, team: Team): Promise<void> {
+  await writeTeam($, team)
+  await writeLedger($, team.dir, emptyLedger())
+  await $.fs.write(`${team.dir}/CARD.md`, cardText(team) + '\n')
+  await $.fs.write(`${team.dir}/.gitignore`, '*\n')
+  await $.fs.write(`${team.dir}/notify.sh`, NOTIFY_SH)
+  for (const r of team.roles) {
+    await $.fs.write(noteFile(team.dir, r.name), `# ${r.name} -- handoff\n\n## Queue (${team.created}; nothing running)\n\n- (empty)\n\n## Inbox\n`)
+    await $.fs.write(`${inboxDir(team.dir, r.name)}/.keep`, '')
+  }
+  await $.fs.write(`${inboxDir(team.dir, 'lead')}/.keep`, '')
+}
+
+// One event file into a role's inbox; the owner is woken by whoever polls.
+export async function writeEvent($: EngineInterface, dir: string, role: string, from: string, text: string, path?: string): Promise<string> {
+  const at = new Date(await $.clock.now()).toISOString().replace(/[:.]/g, '').replace(/\d{3}Z$/, 'Z')
+  const file = `${inboxDir(dir, role)}/${at}-${from}.md`
+  const body = [`from: ${from}`, `at: ${at}`, ...(path ? [`path: ${path}`] : []), '', text, ''].join('\n')
+  await $.fs.write(file, body)
+  return file
+}
+
+export type Event = { file: string; name: string; text: string }
+
+// Unread events of a role, oldest first (the `seen/` folder is skipped).
+export async function unreadEvents($: EngineInterface, dir: string, role: string): Promise<Event[]> {
+  const folder = inboxDir(dir, role)
+  const entries = await $.fs.list(folder).catch(() => [])
+  const files = entries.filter(e => e.kind === 'file' && e.name.endsWith('.md')).sort((a, b) => a.name.localeCompare(b.name))
+  const out: Event[] = []
+  for (const e of files) {
+    const text = await $.fs.read(`${folder}/${e.name}`).catch(() => '')
+    out.push({ file: `${folder}/${e.name}`, name: e.name, text })
+  }
+  return out
+}
+
+// `$.fs` has no move: an acknowledged event is copied under seen/ and the
+// original emptied to a marker the listing skips (not .md).
+export async function ackEvent($: EngineInterface, dir: string, role: string, event: Event): Promise<void> {
+  await $.fs.write(`${inboxDir(dir, role)}/seen/${event.name}`, event.text)
+  await $.process.run(['rm', '-f', event.file], { timeoutMs: 5000 }).catch(() => undefined)
+}
+
+// The queue block of a note: from its `## Queue` heading to the next heading.
+export function queueBlock(note: string): string {
+  const lines = note.split('\n')
+  const start = lines.findIndex(l => l.startsWith('## Queue'))
+  if (start < 0) return ''
+  const out: string[] = []
+  for (const l of lines.slice(start)) {
+    if (out.length > 0 && l.startsWith('## ')) break
+    out.push(l)
+  }
+  return out.join('\n').trim().split('\n').slice(0, 40).join('\n')
+}
+
+// The note with its queue block replaced (or added first) by a new heading
+// and body; everything else stays as it was.
+export function replaceQueue(note: string, heading: string, body: string): string {
+  const lines = note.split('\n')
+  const start = lines.findIndex(l => l.startsWith('## Queue'))
+  const block = [`## Queue (${heading})`, '', body.trim(), '']
+  if (start < 0) {
+    const hasTitle = lines[0]?.startsWith('# ')
+    const title = hasTitle ? [lines[0], ''] : []
+    let rest = hasTitle ? lines.slice(1) : lines
+    while (rest[0] === '') rest = rest.slice(1)
+    return [...title, ...block, ...rest].join('\n')
+  }
+  let end = start + 1
+  while (end < lines.length && !(lines[end] ?? '').startsWith('## ')) end += 1
+  return [...lines.slice(0, start), ...block, ...lines.slice(end)].join('\n')
+}
+
+export async function appendInbox($: EngineInterface, dir: string, role: string, line: string): Promise<void> {
+  const path = noteFile(dir, role)
+  const note = await $.fs.read(path).catch(() => `# ${role} -- handoff\n\n## Inbox\n`)
+  const text = note.includes('\n## Inbox') ? note.replace(/\n## Inbox\n?/, m => `${m.endsWith('\n') ? m : m + '\n'}- ${line}\n`) : `${note}\n## Inbox\n- ${line}\n`
+  await $.fs.write(path, text)
+}
