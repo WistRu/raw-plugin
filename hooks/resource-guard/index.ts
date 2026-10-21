@@ -332,13 +332,25 @@ export function registerResourceGuard(on: On, _options: PluginOptions): void {
 
   on('command.run', { command: 'resources' }, async ($, e) => {
     const p = await probe($)
-    if ((e.args ?? '').trim() === 'setup') {
-      return {
-        text:
-          swapHint($, p) ??
-          (p.os === 'Linux' ? 'Swap is already dynamic here: zram plus swapspace are active.' : `${p.os} manages swap by itself: nothing to set up.`),
-      }
-    }
-    return { text: `${snapshot(p)}\n${shortage(p, 0) ?? 'A heavy command may start now.'}` }
+    return { text: (e.args ?? '').trim() === 'setup' ? setupText($, p) : resourcesText(p) }
   })
+
+  // The same commands under the plugin's own prefix, as commands/*.md list
+  // them; answered here directly, so the model is never involved.
+  on('command.run', { command: 'raw-plugin:resources' }, async $ => ({ text: resourcesText(await probe($)) }))
+  on('command.run', { command: 'raw-plugin:setup' }, async $ => {
+    const p = await probe($)
+    return { text: setupText($, p) }
+  })
+}
+
+function setupText($: EngineInterface, p: Probe): string {
+  return (
+    swapHint($, p) ??
+    (p.os === 'Linux' ? 'Swap is already dynamic here: zram plus swapspace are active.' : `${p.os} manages swap by itself: nothing to set up.`)
+  )
+}
+
+function resourcesText(p: Probe): string {
+  return `${snapshot(p)}\n${shortage(p, 0) ?? 'A heavy command may start now.'}`
 }

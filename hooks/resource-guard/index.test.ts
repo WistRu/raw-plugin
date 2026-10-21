@@ -199,4 +199,10 @@ test('the resources tool and command report the snapshot; setup hints once per m
   expect(cmd.text).toMatch(/CPU busy 1\.0\/6 cores/)
   const setup = await $.command.run({ command: 'resources', args: 'setup' })
   expect(setup.text).toMatch(/sudo .*setup-swap\.sh/)
+
+  // The prefixed commands (commands/*.md) are answered by the hooks too.
+  const prefixed = await $.command.run({ command: 'raw-plugin:resources', args: '' })
+  expect(prefixed.text).toMatch(/CPU busy 1\.0\/6 cores/)
+  const prefixedSetup = await $.command.run({ command: 'raw-plugin:setup', args: '' })
+  expect(prefixedSetup.text).toMatch(/sudo .*setup-swap\.sh/)
 })
