@@ -89,7 +89,7 @@ export function cardText(team: Team): string {
     '- The ledger: `mcp__rp__team_task` (add / set / list / board / queue). Statuses: ready, in_progress, awaiting_verify, done, failed, dropped; blocked and ready follow from depends_on.',
     '- A message to a role: `mcp__rp__team_notify` (to its session, or an event file in its inbox when it has none).',
     '- The handoff note: `mcp__rp__team_handoff` writes the queue block of `handoff/<role>.md`; the stamp and the session id are added by the plugin.',
-    '- The critic: `mcp__rp__team_critic` reads a result with fresh eyes before it goes to its verifier; a task with a verifier is not sent to awaiting_verify without it.',
+    '- The critic: `mcp__rp__critic` reads a result with fresh eyes before it goes to its verifier; a task with a verifier is not sent to awaiting_verify without it.',
     '- Roles (the lead only): `mcp__rp__team_role` parks, wakes, adds or starts a role.',
     '- A shell job that finishes: `sh <team folder>/notify.sh <role> "<what>" [<path>]`.',
     '- Report in one schema: what was done · worked or not · what is needed next.',
@@ -129,7 +129,7 @@ export function memberSection(team: Team, role: Role): string {
     'Rules:',
     ...team.rules.map((r, i) => `${i + 1}. ${r}`),
     'Tools: mcp__rp__team_task (the ledger; action "queue" shows your note\'s queue block, "board" the whole team), mcp__rp__team_notify (message a role or "lead"), mcp__rp__team_handoff (write your queue block).',
-    'Before a result leaves you: mcp__rp__team_audit (the mechanical check of figures, commands, files, tests and sums against the record), then mcp__rp__team_critic with the task id (mode "heavy" for a figure or conclusion that reaches the lead or the person), then mcp__rp__team_answer for each finding with evidence; awaiting_verify is refused while a blocking finding is open. mcp__rp__team_predict before and after every run whose outcome you will report; mcp__rp__team_checklist add when a finding settles as a real mistake.',
+    'Before a result leaves you: mcp__rp__audit (the mechanical check of figures, commands, files, tests and sums against the record), then mcp__rp__critic with the task id (mode "heavy" for a figure or conclusion that reaches the lead or the person), then mcp__rp__answer for each finding with evidence; awaiting_verify is refused while a blocking finding is open. mcp__rp__predict before and after every run whose outcome you will report; mcp__rp__checklist add when a finding settles as a real mistake.',
     'At the start of a turn that begins new work, read your queue (team_task queue). Before a long wait and after every finished item call team_handoff.',
   ].join('\n')
 }
@@ -140,7 +140,7 @@ export function leadSection(team: Team): string {
     `Goal: ${team.goal}. Team folder: ${team.dir}.`,
     `Roles: ${team.roles.map(r => r.name).join(', ')}.`,
     'You own priorities, the ledger and the operator\'s decisions (at most two options, a recommendation first). You start nothing a role owns; you message the role.',
-    'Tools: mcp__rp__team_task (action "board" draws the board with each role\'s state, the errors the critics found and the prediction scores), mcp__rp__team_notify, mcp__rp__team_role (park, wake, add or start a role), mcp__rp__team_critic and team_answer for your own results, mcp__rp__team_review at a milestone and before /team close (the critic of this whole session, the person\'s reasoning included; its USER findings go to the person as they stand); /team status draws the board for the person, /team close ends the team.',
+    'Tools: mcp__rp__team_task (action "board" draws the board with each role\'s state, the errors the critics found and the prediction scores), mcp__rp__team_notify, mcp__rp__team_role (park, wake, add or start a role), mcp__rp__critic and answer for your own results, mcp__rp__review at a milestone and before /team close (the critic of this whole session, the person\'s reasoning included; its USER findings go to the person as they stand); /team status draws the board for the person, /team close ends the team.',
     'Only verified figures reach the operator; anything else is marked "unverified".',
   ].join('\n')
 }

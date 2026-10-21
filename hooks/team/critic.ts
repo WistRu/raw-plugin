@@ -33,6 +33,12 @@ export type CriticRun = {
   findings: CriticFinding[]
   // the critics' free text of the last round (claims, prior work, breaker)
   notes: string
+  // A review run as a visible critic session: its desktop address; the
+  // verdicts then arrive as its messages, parsed by the receive hook.
+  session?: string
+  // Where a session run stands: waiting for the critic's first ledger, or
+  // for its verdict on the author's answers.
+  waiting?: 'first-reply' | 'verdict'
 }
 
 export const MAX_ROUNDS = 3
@@ -166,10 +172,11 @@ export function logicPrompt(args: { subject: string; purpose: string; checklist:
   ].filter(Boolean).join('\n')
 }
 
-export function reviewPrompt(args: { digestPath: string; cwd: string; git: string; focus: string; checklist: string; priorLedgers: string[]; userLanguage: string }): string {
+export function reviewPrompt(args: { digestPath: string; transcriptPath?: string; cwd: string; git: string; focus: string; checklist: string; priorLedgers: string[]; userLanguage: string }): string {
   return [
     'You are the critic of one whole session of Claude Code, which you did not take part in. Find where the reasoning in it is weak -- the USER\'s as much as the AGENT\'s -- and say so plainly.',
-    `TRANSCRIPT DIGEST: ${args.digestPath} (read all of it, in chunks; each entry is tagged M<n>)`,
+    `TRANSCRIPT DIGEST: ${args.digestPath} (read all of it, in chunks; each entry is tagged M<n>; a clipped entry ends with "…[N more chars]")`,
+    args.transcriptPath ? `FULL TRANSCRIPT: ${args.transcriptPath} (the session's own JSONL record, one message per line; when the digest clips something that matters, grep this file for a phrase of the entry and read that line whole)` : 'FULL TRANSCRIPT: not found on disk; the digest is what there is',
     `WORKING DIRECTORY: ${args.cwd}`,
     `GIT: ${args.git || 'not a git repository'}`,
     `FOCUS FROM THE USER: ${args.focus || 'none'}`,
@@ -216,17 +223,19 @@ export type DigestMessage = { role: string; text: string; toolUses?: { tool: str
 const clip = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n)} …[${s.length - n} more chars]`)
 
 // The transcript as plain text the critic reads: one entry per message,
-// tool calls with a clipped input and output, each tagged M<n>.
-export function digest(messages: DigestMessage[], maxChars = 400_000): string {
+// tool calls with a clipped input and output, each tagged M<n>. The full
+// record stays in the session's JSONL file, which the prompt names, so a
+// clipped entry can be read whole there.
+export function digest(messages: DigestMessage[], maxChars = 600_000): string {
   const lines: string[] = []
   let n = 0
   for (const m of messages) {
     n += 1
     const who = m.role === 'user' ? 'USER' : m.role === 'assistant' ? 'AGENT' : m.role.toUpperCase()
-    if (m.text.trim()) lines.push(`M${n} ${who}: ${clip(m.text.trim(), 3000)}`)
+    if (m.text.trim()) lines.push(`M${n} ${who}: ${clip(m.text.trim(), 6000)}`)
     for (const t of m.toolUses ?? []) {
-      const input = clip(JSON.stringify(t.input), 400)
-      lines.push(`M${n} TOOL ${t.tool}${t.isError ? ' (error)' : ''} ${input}\n    -> ${clip((t.text ?? '').trim(), 800).replace(/\n/g, '\n    ')}`)
+      const input = clip(JSON.stringify(t.input), 600)
+      lines.push(`M${n} TOOL ${t.tool}${t.isError ? ' (error)' : ''} ${input}\n    -> ${clip((t.text ?? '').trim(), 2000).replace(/\n/g, '\n    ')}`)
     }
   }
   let text = lines.join('\n')

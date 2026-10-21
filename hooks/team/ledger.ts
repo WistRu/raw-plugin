@@ -128,8 +128,8 @@ export function setTask(ledger: Ledger, args: SetArgs, at: string, by: string): 
   }
   const critic = args.critic ?? before.critic
   if (args.status === 'awaiting_verify' && before.verifier && !args.force) {
-    if (!critic) return { error: `${args.id} goes to ${before.verifier} only after the critic has read it (team_critic with task ${args.id}); pass force to skip, saying why in the note` }
-    if ((critic.openBlocking ?? 0) > 0) return { error: `${args.id} still has ${critic.openBlocking} open blocking finding(s) in critic run ${critic.run ?? '?'}: answer them with team_answer first; pass force to skip, saying why in the note` }
+    if (!critic) return { error: `${args.id} goes to ${before.verifier} only after the critic has read it (critic with task ${args.id}); pass force to skip, saying why in the note` }
+    if ((critic.openBlocking ?? 0) > 0) return { error: `${args.id} still has ${critic.openBlocking} open blocking finding(s) in critic run ${critic.run ?? '?'}: answer them with answer first; pass force to skip, saying why in the note` }
   }
   const wasReady = new Set(ledger.tasks.filter(t => t.status === 'ready').map(t => t.id))
   const updated: Task = {

@@ -96,12 +96,12 @@ folder.
   whole tree) and refused the same way; quotes are stripped, not parsed, so
   the reading is conservative.
 - **The critics**, four layers that drive the error rate down:
-  1. `mcp__rp__team_audit`, no model: every figure in a result must appear
+  1. `mcp__rp__audit`, no model: every figure in a result must appear
      in a tool output of the session, every quoted command must have been
      run, every file said written must exist and be newer than the session,
      "tests pass" needs a passing run, "committed" needs `git commit`, and
      every `a + b = c` or `x of y = p %` is recomputed (`hooks/team/audit.ts`).
-  2. `mcp__rp__team_critic`, the subagent `rp:critic` on a model other than
+  2. `mcp__rp__critic`, the subagent `rp:critic` on a model other than
      the session's (Sonnet for a session on Opus, Opus otherwise), its
      Bash, Edit and Write refused when they would write: the audit's lines,
      claim cards (claim, source, reproduced, falsifier), one figure
@@ -110,26 +110,33 @@ folder.
      scope). Findings are lines
      `F<n> [status] BLOCKING|NOTE|QUESTION USER|AGENT -- text`, kept as a
      run under `critic/`.
-  3. `mcp__rp__team_answer`: the debate. The author answers each finding
+  3. `mcp__rp__answer`: the debate. The author answers each finding
      with evidence (fixed, refuted, user, cannot); the critic re-checks and
      sets `SETTLED-FIXED`, `SETTLED-WRONG`, `USER` or `OPEN`; three rounds at
      most, an honest `OPEN` is a valid end. With a task id the run is
      recorded on the task, and `awaiting_verify` is refused while a blocking
      finding is open (`force` skips, saying why).
-  4. `mcp__rp__team_review`: the critic of the whole session, from a digest
-     of the transcript (`review/digest-<k>.md`; each message clipped to
-     3000 characters and each tool output to 800, the whole to 400 000, so
-     the critic reads a clipped record, not the transcript): the main
-     claims of the user and the agent alike, the key ones verified, prior
-     work, the checklist, the breaker; earlier reviews are read first and
-     their ledgers carried over. Its `USER` findings go to the person as
-     they stand. The review, the critic, the debate, the checklist and the
-     predictions work in a session of no team too, into
-     `_sessions/<id>/` beside the teams. Each call blocks the turn until
-     the critic answers (ten minutes at most).
-  What the team learns: `mcp__rp__team_checklist add` appends one dated line
+  4. `mcp__rp__review`: the critic of the whole session, from a digest
+     of the transcript (`review/digest-<k>.md`, each message clipped to
+     6000 characters and each tool output to 2000) beside the path of the
+     session's full JSONL record, which the critic opens where the digest
+     clips something that matters: the main claims of the user and the
+     agent alike, the key ones verified, prior work, the checklist, the
+     breaker; earlier reviews are read first and their ledgers carried
+     over. Its `USER` findings go to the person as they stand. With
+     `session: true` (`/session-review --session`) the critic is a visible
+     Claude Desktop session of its own, on the other model, that the
+     person can open and talk to; its ledgers arrive as messages, the
+     plugin records them on the run, and `answer` sends the author's
+     answers to it. Without it, a subagent answers inside the call, which
+     blocks the turn until it does (ten minutes at most).
+  The six work in any session, team or not (`_sessions/<id>/` beside the
+  teams), as tools the model calls or as the person's own commands:
+  `/audit <path or text>`, `/critic <path or claim> [--heavy] [--task
+  T-NNNN]`, `/session-review [--session] [focus]`.
+  What the team learns: `mcp__rp__checklist add` appends one dated line
   per settled mistake (`CHECKLIST.md`, read by every critic, never
-  reworded); `mcp__rp__team_predict` records what a role expects before a
+  reworded); `mcp__rp__predict` records what a role expects before a
   run and resolves it after, and the critics quote the score where the role
   speaks with certainty. The board (`team_task board`, `/team status`) shows
   per role the blocking findings found, fixed, refuted and open, and the
@@ -149,11 +156,13 @@ folder.
   membership check runs on every Bash, Edit and Write of every session on
   the machine; outside a team it costs one listing of the teams folder per
   minute and nothing else.
-- **Tried live on 2026-10-21** (a two-role toy team in Claude Desktop):
-  the sessions start from the hook, bind from the brief, message the lead
-  and each other, the critic gate and the verifier wake work, the lead's
-  poll delivers a waiting event. Not yet seen live: waking a session that
-  has stopped, and the terminal fallback with subagents.
+- **Tried live on 2026-10-21** (a two-role toy team, then a one-role wake
+  test, in Claude Desktop): the sessions start from the hook, bind from
+  the brief, message the lead and each other, the critic gate and the
+  verifier wake work, the lead's poll delivers a waiting event, and a role
+  whose session had stopped was woken by `team_notify` and answered. Not
+  yet seen live: the terminal fallback with subagents, and the review as a
+  visible critic session.
 
 Ported from BTC5Model's convergence roles (card, handoff notes,
 `role_tasks.py`, `role_inbox.py`, `/resume-role`, `/role-handoff`) with the

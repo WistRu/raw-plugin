@@ -86,7 +86,7 @@ test('the digest tags entries and clips tool output; predictions score per role'
     { role: 'assistant', text: 'done', toolUses: [{ tool: 'Bash', input: { command: 'ls' }, text: 'a\nb' }] },
   ])
   expect(d).toBe('M1 USER: do x\nM2 AGENT: done\nM2 TOOL Bash {"command":"ls"}\n    -> a\n    b')
-  const long = digest([{ role: 'user', text: 'x'.repeat(5000) }])
+  const long = digest([{ role: 'user', text: 'x'.repeat(8000) }])
   expect(long).toMatch(/…\[2000 more chars\]$/)
   const score = predictionScore([
     { id: 'P-0001', role: 'a', text: 't', at: 'x', outcome: 'hit' },
