@@ -224,7 +224,8 @@ function readSegment(words: Word[], out: WriteTargets, shell: Shell): void {
       const head = dd >= 0 ? after.slice(0, dd) : after
       for (let j = 0; j < head.length; j++) {
         const w = head[j] ?? { text: '', isQuoted: false }
-        if (!w.isQuoted && VALUED.has(w.text)) {
+        // a cluster of short flags ending in one that takes a value (`-am "msg"`)
+        if (!w.isQuoted && (VALUED.has(w.text) || /^-[a-zA-Z]+[mFCct]$/.test(w.text))) {
           j++
           continue
         }
@@ -233,7 +234,7 @@ function readSegment(words: Word[], out: WriteTargets, shell: Shell): void {
       }
       const args = dd >= 0 ? after.slice(dd + 1) : before
       const paths = args.filter(w => isPathLike(w, true)).map(w => w.text)
-      if (shell.cwd !== undefined || paths.length === 0 || after.some(w => !w.isQuoted && (w.text === '-A' || w.text === '-a' || w.text === '--all' || w.text === '.'))) out.isWholeTree = true
+      if (shell.cwd !== undefined || paths.length === 0 || after.some(w => !w.isQuoted && (w.text === '-A' || w.text === '-a' || w.text === '--all' || w.text === '.' || /^-[b-zA-Z]*a[a-zA-Z]*$/.test(w.text)))) out.isWholeTree = true
       out.paths.push(...paths.filter(p => p !== '.').map(p => under(shell, p)))
     }
   }

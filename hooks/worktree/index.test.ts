@@ -110,6 +110,9 @@ test('a Bash write is read by bashzone and judged the same way', async () => {
   expect(await refusal(host, repo, bash('echo x > notes.txt', '/r'), ON)).toBeUndefined()
   // a verb that rewrites the whole tree: refused in the main tree, free in a worktree
   expect(await refusal(host, repo, bash('git commit -m wip', '/r'), ON)).toMatch(/git commit rewrites the main tree of \/r/)
+  // a flag cluster: -a commits every tracked change, the message is no path
+  expect(writeTargets('git commit -am "say hello"')).toEqual({ verbs: ['git commit'], paths: [], isWholeTree: true })
+  expect(await refusal(host, repo, bash('git commit -am "say hello"', '/r'), ON)).toMatch(/git commit rewrites the main tree/)
   expect(await refusal(host, repo, bash('git commit -m wip', '/r/.claude/worktrees/feat'), ON)).toBeUndefined()
   expect(await refusal(host, repo, bash("sed -i 's/a/b/' src/a.ts", '/r/.claude/worktrees/feat'), ON)).toBeUndefined()
 })

@@ -256,6 +256,26 @@ the landing.
   BTC5Model's `scripts/prune_landed_branches.sh` without that project's own
   refusal for cited commits. A repository with its reflog turned off keeps
   every branch with no commit of its own, landed or not.
+- **Tried live on 2026-10-21** (`claude -p --plugin-dir` on Sonnet, in a
+  throwaway repository under `/tmp` with a branch landed by fast-forward and
+  its worktree left behind, one landed by rebase, and a fresh worktree with
+  no commit): the section showed the rule, `Here: main tree of ...` and
+  `Prune: 2 landed branches can go: done (worktree ..., 20K), reb`; an Edit
+  of a tracked file in the main tree was refused with the way out, an
+  untracked file written by Bash went through; after `EnterWorktree` the
+  edit and the commit went through; `mcp__rp__land` fast-forwarded main and,
+  on the second run, left the worktree through `ExitWorktree` (keep),
+  removed it and deleted its branch, the session back in the main tree;
+  `mcp__rp__worktree_prune` removed the old worktree, deleted `done` with
+  `-d` and `reb` with `-D` beside its cherry list, and kept `fresh`. Seen
+  and fixed on the way: inside a hook `$.session.cwd()` stays what it was
+  when the hook began, so the first run kept the worktree although the
+  session had left it; the landing now reads where the session went from
+  `ExitWorktree`'s own answer. `git commit -am "msg"` was read by bashzone
+  as a commit of the path `msg`; a flag cluster is now read as its flags.
+  Not yet seen live: a desktop app session made in a worktree (the landing
+  should keep the worktree there), a subagent with `isolation: worktree`,
+  `preLand` and `postLand`.
 - **Repository hooks do not fire from `/land`**: the engine runs git with
   the repository's hooks off, so a project's `post-merge` or
   `post-checkout` hook is skipped by the landing. `postLand` is the place for

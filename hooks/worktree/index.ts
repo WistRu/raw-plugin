@@ -126,15 +126,21 @@ async function landHere($: EngineInterface, agentId?: string): Promise<string> {
     if (!(cwdReal === path || cwdReal.startsWith(`${path}/`))) return true
     if (agentId !== undefined) return false
     const ran = await $.tool.call({ tool: 'ExitWorktree', action: 'keep' }).catch(() => undefined)
-    if (!ran || 'deny' in ran && ran.deny || ran.isError) return false
-    const now = (await host.real(await $.session.cwd())) ?? ''
+    if (!ran || ('deny' in ran && ran.deny) || ran.isError) return false
+    // `$.session.cwd()` stays what it was when this hook began, so the
+    // tool's own answer says where the session went (seen live 2026-10-21)
+    const out = ran.result as { restoredCwd?: string; originalCwd?: string } | undefined
+    const went = out?.restoredCwd ?? out?.originalCwd
+    if (went === undefined) return false
+    const now = (await host.real(went)) ?? went
     return !(now === path || now.startsWith(`${path}/`))
   }
   try {
     return await land(host, repo, cwdReal, { leave })
   } finally {
     forget()
-    await computeSection($).catch(() => undefined)
+    // the section is the main loop's place; a subagent's cwd is its own
+    if (agentId === undefined) await computeSection($).catch(() => undefined)
   }
 }
 
@@ -146,7 +152,7 @@ async function scanPrune($: EngineInterface): Promise<void> {
   pruneText = pruneLine(await scan(host, repo, (await host.real(cwd)) ?? cwd))
 }
 
-async function pruneHere($: EngineInterface): Promise<string> {
+async function pruneHere($: EngineInterface, agentId?: string): Promise<string> {
   const repo = await repoOf($)
   if (!repo) return 'Nothing to prune: not in a git repository with a main branch (origin/HEAD, main or master).'
   const host = hostOf($)
@@ -156,7 +162,7 @@ async function pruneHere($: EngineInterface): Promise<string> {
   } finally {
     forget()
     pruneText = undefined
-    await computeSection($).catch(() => undefined)
+    if (agentId === undefined) await computeSection($).catch(() => undefined)
   }
 }
 
@@ -222,7 +228,7 @@ export function registerWorktree(on: On): void {
   on('command.run', { command: 'rp:worktree' }, ($, e) => worktreeCommand($, e.args))
   on('command.run', { command: 'land' }, async $ => ({ text: await landHere($).catch(err => `Not landed: ${String(err)}`) }))
   on('command.run', { command: 'rp:land' }, async $ => ({ text: await landHere($).catch(err => `Not landed: ${String(err)}`) }))
-  on('tool.call', { tool: 'mcp__rp__worktree_prune' }, async $ => answer(await pruneHere($).catch(err => `prune: ${String(err)}`)))
+  on('tool.call', { tool: 'mcp__rp__worktree_prune' }, async ($, e) => answer(await pruneHere($, e.agentId).catch(err => `prune: ${String(err)}`)))
   on('tool.call', { tool: 'mcp__rp__land' }, async ($, e) => answer(await landHere($, e.agentId).catch(err => `Not landed: ${String(err)}`)))
 
   // MultiEdit is matched by name: this build ships no such tool, an older one may
