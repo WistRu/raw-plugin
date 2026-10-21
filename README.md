@@ -33,7 +33,19 @@ Claude Code knows what the machine can carry and never overloads it.
   before sizing a batch); `/rp:resources` (or `/resources`) for the person;
   `/rp:setup` (or `/resources setup`) shows how to make Linux swap Mac-like (`hooks/resource-guard/setup-swap.sh`:
   zram first, disk files on demand; hinted once per machine).
+- **Holds heavy commands also when the CPU is at 95 °C or the disk 95 % full**
+  (figures from sysmon's sample on Linux).
+- On Linux the guard reads sysmon's half-second sample instead of spawning
+  its own probe; the probe script runs at session start and elsewhere.
 - Thresholds are constants at the top of `hooks/resource-guard/index.ts`.
+
+### sysmon
+
+A live system monitor pane: CPU per core, GPU, RAM, swap, disk space and
+I/O, network, temperatures, fan, battery, the busiest and biggest programs.
+`/rp:sysmon` (or `/sysmon`) opens it; `/sysmon line` turns the one-line
+summary under the prompt off and on (the guard draws that line, with GPU and
+temperature when known). Linux only: it reads `/proc` and `/sys`.
 
 Known limits: processes the plugin did not start are only counted, never
 capped; the macOS and Windows probes were written without a machine to run

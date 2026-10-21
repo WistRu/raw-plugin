@@ -206,3 +206,14 @@ test('the resources tool and command report the snapshot; setup hints once per m
   const prefixedSetup = await $.command.run({ command: 'rp:setup', args: '' })
   expect(prefixedSetup.text).toMatch(/sudo .*setup-swap\.sh/)
 })
+
+test('a hot CPU or a nearly full disk holds a heavy command', async ($, on) => {
+  let extra = ',"cpu_temp":97'
+  engine(on, { machine: () => machine().replace('}', `${extra}}`) })
+  await start($)
+  const hot = await $.tool.call({ tool: 'Bash', command: './sim' })
+  expect(hot.deny).toMatch(/CPU too hot: 97°C/)
+  extra = ',"disk_pct":96.4'
+  const full = await $.tool.call({ tool: 'Bash', command: './sim' })
+  expect(full.deny).toMatch(/disk nearly full: 96% used/)
+})

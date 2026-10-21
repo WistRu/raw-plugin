@@ -1,5 +1,12 @@
 import type { On, EngineInterface, PluginOptions } from 'claude-code'
+import { atom, read } from 'claude-code'
+import type { Snapshot } from '../../types'
+import { latest } from '../sysmon/index'
 import { isLight, signature, stripOldWrapper } from './commands'
+
+// The same value sysmon toggles with `/sysmon line`: declared here again, as
+// the engine lists what each file reads from a literal reference.
+const isLineOn = atom({ plugin: 'rp', key: 'isLineOn' } as const, true)
 
 // ---- Settings (edit here) -------------------------------------------------
 
@@ -29,6 +36,11 @@ const SLICE_SWAP_SHARE = 0.5 // of total swap
 // Without a slice (macOS, Windows, Linux without systemd) the watchdog kills
 // the newest own job when available RAM falls under this many bytes.
 const WATCHDOG_MIN = 1 * 1024 ** 3
+// A heavy command waits while the CPU is this hot (°C) or the disk this full (%).
+const HOT_C = 95
+const DISK_FULL_PCT = 95
+// A sysmon sample older than this is not used in place of the probe (ms).
+const SAMPLE_FRESH_MS = 3000
 
 // ---- Probe ----------------------------------------------------------------
 
@@ -46,6 +58,10 @@ type Probe = {
   swap_dynamic: number
   tmp: string
   top: string
+  // From sysmon's sample only (Linux): absent from probe.sh.
+  cpu_temp?: number
+  disk_pct?: number
+  gpu?: number
 }
 
 type Peak = { peak: number; runs: number; at: number }
@@ -67,12 +83,38 @@ let gate: Promise<void> = Promise.resolve()
 const PROBE = 'hooks/resource-guard/probe.sh'
 const SETUP = 'hooks/resource-guard/setup-swap.sh'
 
+// The machine now: sysmon's newest sample when it is fresh (Linux, no process
+// spawned), else probe.sh. The first call, at session start, is always the
+// script: it also says what the machine is (systemd, swap, the run folder).
 async function probe($: EngineInterface): Promise<Probe> {
+  const s = latest()
+  // A sample with no memory total is sysmon on a machine without /proc.
+  if (profile && s && s.memTotal > 0 && (await $.clock.now()) - s.at < SAMPLE_FRESH_MS) {
+    last = fromSnapshot(profile, s)
+    return last
+  }
   const { exitCode, stdout } = await $.process.run(['sh', `${$.plugin.root}/${PROBE}`, SLICE], { timeoutMs: 5000 })
   if (exitCode !== 0) throw new Error(`probe exited ${exitCode}`)
   last = JSON.parse(stdout.trim()) as Probe
   profile ??= last
   return last
+}
+
+function fromSnapshot(base: Probe, s: Snapshot): Probe {
+  return {
+    ...base,
+    mem_total: s.memTotal,
+    mem_avail: s.memTotal - s.memUsed,
+    swap_total: s.swapTotal,
+    swap_free: s.swapTotal - s.swapUsed,
+    load1: s.load[0] ?? 0,
+    cpu: (s.cpu / 100) * base.cores,
+    heavy_jobs: running.size,
+    top: s.topMem.slice(0, 3).map(p => `${p.name} ${gb(p.rss)}G`).join(', '),
+    cpu_temp: s.cpuTemp,
+    disk_pct: s.disk && s.disk.total > 0 ? (s.disk.used / s.disk.total) * 100 : undefined,
+    gpu: s.gpu?.busy,
+  }
 }
 
 const reserve = (p: Probe) => Math.max(RESERVE_MIN, p.mem_total * RESERVE_SHARE)
@@ -87,20 +129,32 @@ function shortage(p: Probe, expected: number): string | undefined {
   }
   const maxCpu = p.cores * CPU_FACTOR
   if (p.cpu > maxCpu) return `CPU: ${p.cpu.toFixed(1)} of ${p.cores} cores busy`
+  if (p.cpu_temp !== undefined && p.cpu_temp >= HOT_C) return `CPU too hot: ${Math.round(p.cpu_temp)}°C`
+  if (p.disk_pct !== undefined && p.disk_pct >= DISK_FULL_PCT) return `disk nearly full: ${Math.round(p.disk_pct)}% used`
   return undefined
 }
 
 function snapshot(p: Probe): string {
   const swap = p.swap_total > 0 ? `, swap free ${gb(p.swap_free)}/${gb(p.swap_total)} GB` : ', no swap'
   const jobs = running.size > 0 ? `, own heavy jobs running: ${running.size}` : ''
+  const temp = p.cpu_temp !== undefined ? `, CPU ${Math.round(p.cpu_temp)}°C` : ''
+  const gpu = p.gpu !== undefined ? `, GPU ${Math.round(p.gpu)}%` : ''
+  const disk = p.disk_pct !== undefined ? `, disk ${Math.round(p.disk_pct)}% full` : ''
   const top = p.top ? `. Biggest: ${p.top}` : ''
-  return `RAM available ${gb(p.mem_avail)}/${gb(p.mem_total)} GB${swap}, CPU busy ${p.cpu.toFixed(1)}/${p.cores} cores${jobs}${top}`
+  return `RAM available ${gb(p.mem_avail)}/${gb(p.mem_total)} GB${swap}, CPU busy ${p.cpu.toFixed(1)}/${p.cores} cores${temp}${gpu}${disk}${jobs}${top}`
 }
 
 function statusLine(p: Probe): string {
   const swap = p.swap_total > 0 ? ` · swap ${gb(p.swap_free)}G` : ''
+  const gpu = p.gpu !== undefined ? ` · gpu ${Math.round(p.gpu)}%` : ''
+  const temp = p.cpu_temp !== undefined ? ` · ${Math.round(p.cpu_temp)}°C` : ''
   const jobs = running.size > 0 ? ` · jobs ${running.size}` : ''
-  return `RAM ${gb(p.mem_avail)}/${gb(p.mem_total)}G${swap} · cpu ${p.cpu.toFixed(1)}/${p.cores}${jobs}`
+  return `RAM ${gb(p.mem_avail)}/${gb(p.mem_total)}G${swap} · cpu ${p.cpu.toFixed(1)}/${p.cores}${gpu}${temp}${jobs}`
+}
+
+// The one summary line under the prompt; `/sysmon line` turns it off and on.
+async function showStatus($: EngineInterface, p: Probe): Promise<void> {
+  if (await read($, isLineOn)) $.ui.status(statusLine(p))
 }
 
 // ---- Slice and wrappers ---------------------------------------------------
@@ -172,7 +226,7 @@ async function ramp($: EngineInterface, job: Job): Promise<void> {
     } catch {
       return
     }
-    $.ui.status(statusLine(p))
+    await showStatus($, p)
     if (before - p.mem_avail < p.mem_total * 0.01) return
     before = p.mem_avail
   }
@@ -206,47 +260,47 @@ const KILLED = /exit code 137|killed|SIGKILL/i
 
 // ---- Hooks ----------------------------------------------------------------
 
-export function registerResourceGuard(on: On, _options: PluginOptions): void {
-  on('session.start', async ($, e, next) => {
-    const started = await next(e)
-    sliceReady = false
-    running.clear()
+// Called from the plugin's one session.start hook (hooks/register.ts).
+export async function startResourceGuard($: EngineInterface, _options: PluginOptions): Promise<void> {
+  sliceReady = false
+  running.clear()
+  profile = undefined
+  try {
+    const p = await probe($)
+    await showStatus($, p)
+    await loadPeaks($)
+    if (p.systemd === 1) await makeSlice($, p)
+    const hint = swapHint($, p)
+    if (hint && !(await $.store.get(SWAP_HINT_KEY))) {
+      $.ui.log(hint)
+      await $.store.set(SWAP_HINT_KEY, true)
+    }
+  } catch (err) {
+    $.ui.log(`${$.plugin.name}: setup failed: ${String(err)}`, { to: 'debug' })
+  }
+  $.clock.every(TICK_MS, async () => {
     try {
       const p = await probe($)
-      $.ui.status(statusLine(p))
-      await loadPeaks($)
-      if (p.systemd === 1) await makeSlice($, p)
-      const hint = swapHint($, p)
-      if (hint && !(await $.store.get(SWAP_HINT_KEY))) {
-        $.ui.log(hint)
-        await $.store.set(SWAP_HINT_KEY, true)
-      }
-    } catch (err) {
-      $.ui.log(`${$.plugin.name}: setup failed: ${String(err)}`, { to: 'debug' })
+      await showStatus($, p)
+      await watchdog($, p)
+    } catch {
+      // keep the previous line
     }
-    $.clock.every(TICK_MS, async () => {
-      try {
-        const p = await probe($)
-        $.ui.status(statusLine(p))
-        await watchdog($, p)
-      } catch {
-        // keep the previous line
-      }
-    })
-    await $.tool.register({
-      name: 'resources',
-      description:
-        'Current machine load: available RAM, swap, busy CPU, own heavy jobs, the biggest processes, and whether a heavy command may start now. Call before choosing how many jobs to run in parallel.',
-      inputSchema: { type: 'object', properties: {} },
-    })
-    $.command.register({
-      name: 'resources',
-      description: 'Show machine resources and current load; "setup" shows how to make swap Mac-like',
-      argumentHint: '[setup]',
-    })
-    return started
   })
+  await $.tool.register({
+    name: 'resources',
+    description:
+      'Current machine load: available RAM, swap, busy CPU, temperature, GPU, disk, own heavy jobs, the biggest programs, and whether a heavy command may start now. Call before choosing how many jobs to run in parallel.',
+    inputSchema: { type: 'object', properties: {} },
+  })
+  $.command.register({
+    name: 'resources',
+    description: 'Show machine resources and current load; "setup" shows how to make swap Mac-like',
+    argumentHint: '[setup]',
+  })
+}
 
+export function registerResourceGuard(on: On): void {
   // The model reads the machine once, in the system prompt: cheap and cached.
   on('prompt.compose', async ($, e, next) => {
     const { sections } = await next(e)
@@ -255,7 +309,7 @@ export function registerResourceGuard(on: On, _options: PluginOptions): void {
     const text = [
       `# Machine resources (${$.plugin.name})`,
       `This machine: ${p.os}, ${p.cores} cores, ${gb(p.mem_total)} GB RAM, ${p.swap_total > 0 ? gb(p.swap_total) + ' GB swap' : 'no swap'}.`,
-      `Every Bash command except plain file, text and git work counts as heavy: it is held with the current figures while less than ${gb(reserve(p))} GB RAM is available (plus what the command took last time) or all ${p.cores} cores are busy. Then wait, or run fewer in parallel, and retry. Heavy commands start one at a time.`,
+      `Every Bash command except plain file, text and git work counts as heavy: it is held with the current figures while less than ${gb(reserve(p))} GB RAM is available (plus what the command took last time), all ${p.cores} cores are busy, the CPU is at ${HOT_C}°C or the disk is ${DISK_FULL_PCT}% full. Then wait, or run fewer in parallel, and retry. Heavy commands start one at a time.`,
       `Before starting several jobs at once, call the tool mcp__${$.plugin.name}__resources and size the batch by it.`,
       sliceReady
         ? `A heavy command runs inside the memory slice ${SLICE} by itself (slowed down above ${gb(p.mem_total * SLICE_HIGH_SHARE)} GB, killed at ${gb(p.mem_total * SLICE_MAX_SHARE)} GB: exit 137 means that, rerun with fewer jobs). Write the plain command, never a wrapper such as \`heavy\`. Inside it \`cd\` does not carry over to the next command.`
@@ -302,7 +356,7 @@ export function registerResourceGuard(on: On, _options: PluginOptions): void {
       }
       await $.fs.write(job.files.sh, command + '\n')
       running.set(id, job)
-      $.ui.status(statusLine(p))
+      await showStatus($, p)
       $.ui.log(`${$.plugin.name}: heavy command started${sliceReady ? ` in ${SLICE}` : ''} — ${snapshot(p)}`, { to: 'debug' })
       void ramp($, job).finally(open)
 
