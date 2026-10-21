@@ -29,7 +29,8 @@ cpu_busy_linux() {
 }
 
 if [ "$os" = "Linux" ]; then
-  cores=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN)
+  # getconf, not nproc: nproc obeys OMP_NUM_THREADS and would under-count.
+  cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc --all)
   # /proc/meminfo reports kB.
   eval "$(awk '
     $1=="MemTotal:"     {printf "mem_total=%d;",  $2*1024}

@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 const GB = 1024 ** 3
 const TOOL = 'mcp__rp__resources'
@@ -21,6 +21,8 @@ const ok = (stdout: string) => ({
 type BashAnswer = { result: unknown; text: string; isError?: true }
 type World = {
   machine: () => string
+  // 'mock': the test's mock.clock answers the clock (registered by the test first).
+  clock?: 'mock'
   probeExit: number
   bashAnswer: (command: string) => BashAnswer
   files: Map<string, string>
@@ -62,9 +64,11 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], fake: Partial<Wor
     w.store.set(e.key, e.value)
     return { value: undefined }
   })
-  on('clock.every', () => ({ value: undefined }))
-  on('clock.now', () => ({ value: 1_700_000_000_000 }))
-  on('clock.sleep', () => ({ value: undefined }))
+  if (fake.clock !== 'mock') {
+    on('clock.every', () => ({ value: undefined }))
+    on('clock.now', () => ({ value: 1_700_000_000_000 }))
+    on('clock.sleep', () => ({ value: undefined }))
+  }
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', (_, e) => {
     w.logged.push(e.text)
@@ -216,4 +220,34 @@ test('a hot CPU or a nearly full disk holds a heavy command', async ($, on) => {
   extra = ',"disk_pct":96.4'
   const full = await $.tool.call({ tool: 'Bash', command: './sim' })
   expect(full.deny).toMatch(/disk nearly full: 96% used/)
+})
+
+// sysmon's sample stands in for the probe once it is fresh: the reply then
+// carries temperature, GPU and disk, and the core count is the machine's.
+const PROC: Record<string, string> = {
+  '/proc/stat': 'cpu  100 0 100 800 0 0 0 0\n' + Array.from({ length: 22 }, (_, i) => `cpu${i} 5 0 5 40 0 0 0 0`).join('\n') + '\n',
+  '/proc/meminfo': 'MemTotal: 33554432 kB\nMemAvailable: 8388608 kB\nSwapTotal: 16777216 kB\nSwapFree: 1048576 kB\n',
+  '/proc/loadavg': '2.50 1.75 1.00 3/900 12345\n',
+  '/proc/diskstats': ' 259 0 nvme0n1 1 0 0 0 1 0 0 0 0 0 0\n',
+  '/proc/net/route': 'Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\n',
+  '/proc/net/dev': '',
+  '/sys/class/hwmon/hwmon0/name': 'coretemp\n',
+  '/sys/class/hwmon/hwmon0/temp1_input': '97000\n',
+}
+
+test('with a fresh sysmon sample the guard answers from it, not the probe script', async ($, on) => {
+  const clock = mock.clock(on)
+  const w = engine(on, { machine: () => machine({ systemd: 1 }), clock: 'mock' })
+  on('fs.list', (_, e) => ({ value: e.path === '/sys/class/hwmon' ? [{ name: 'hwmon0', kind: 'other', size: 0, mtimeMs: 0, isLink: true }] : [] }) as any)
+  for (const [path, text] of Object.entries(PROC)) w.files.set(path, text)
+  await start($)
+  // Two of sysmon's half-second samples.
+  await clock.advance(500)
+  await clock.advance(500)
+  const probes = w.runs.filter(r => String(r[1]).endsWith('probe.sh')).length
+
+  const cmd = await $.command.run({ command: 'rp:resources', args: '' })
+  expect(cmd.text).toMatch(/CPU 97°C/)
+  expect(cmd.text).toMatch(/\/22 cores/)
+  expect(w.runs.filter(r => String(r[1]).endsWith('probe.sh')).length).toBe(probes)
 })

@@ -16,6 +16,8 @@ export const isLineOn = atom({ plugin: 'rp', key: 'isLineOn' } as const, true)
 // spawning its own probe on Linux); undefined before the first sample.
 let latestSnapshot: Snapshot | undefined
 export const latest = (): Snapshot | undefined => latestSnapshot
+// One sample now, outside the timer (tests).
+export const sampleNow = ($: EngineInterface): Promise<void> => sample($)
 
 const TICKS = 100 // USER_HZ: /proc counts CPU time in 1/100 s
 const PAGE = 4096

@@ -108,7 +108,8 @@ function fromSnapshot(base: Probe, s: Snapshot): Probe {
     swap_total: s.swapTotal,
     swap_free: s.swapTotal - s.swapUsed,
     load1: s.load[0] ?? 0,
-    cpu: (s.cpu / 100) * base.cores,
+    cores: s.cores.length > 0 ? s.cores.length : base.cores,
+    cpu: (s.cpu / 100) * (s.cores.length > 0 ? s.cores.length : base.cores),
     heavy_jobs: running.size,
     top: s.topMem.slice(0, 3).map(p => `${p.name} ${gb(p.rss)}G`).join(', '),
     cpu_temp: s.cpuTemp,
@@ -265,18 +266,34 @@ export async function startResourceGuard($: EngineInterface, _options: PluginOpt
   sliceReady = false
   running.clear()
   profile = undefined
-  try {
-    const p = await probe($)
-    await showStatus($, p)
-    await loadPeaks($)
-    if (p.systemd === 1) await makeSlice($, p)
-    const hint = swapHint($, p)
-    if (hint && !(await $.store.get(SWAP_HINT_KEY))) {
-      $.ui.log(hint)
-      await $.store.set(SWAP_HINT_KEY, true)
+  // The first probe says what the machine is; a session start is a busy
+  // moment, so one failure gets a second try. A failure is shown, not hidden:
+  // until a probe works, heavy commands run unchecked.
+  let p: Probe | undefined
+  let failure = ''
+  for (let attempt = 0; attempt < 2 && !p; attempt++) {
+    try {
+      p = await probe($)
+    } catch (err) {
+      failure = String(err)
+      await $.clock.sleep(2000)
     }
-  } catch (err) {
-    $.ui.log(`${$.plugin.name}: setup failed: ${String(err)}`, { to: 'debug' })
+  }
+  if (!p) {
+    $.ui.log(`${$.plugin.name}: the machine probe failed at start (${failure}); heavy commands are not checked until it works`)
+  } else {
+    try {
+      await showStatus($, p)
+      await loadPeaks($)
+      if (p.systemd === 1) await makeSlice($, p)
+      const hint = swapHint($, p)
+      if (hint && !(await $.store.get(SWAP_HINT_KEY))) {
+        $.ui.log(hint)
+        await $.store.set(SWAP_HINT_KEY, true)
+      }
+    } catch (err) {
+      $.ui.log(`${$.plugin.name}: setup failed: ${String(err)}`)
+    }
   }
   $.clock.every(TICK_MS, async () => {
     try {

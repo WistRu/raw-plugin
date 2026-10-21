@@ -89,6 +89,11 @@ test('the pane draws live numbers on every surface that shows panes', async ($, 
     ({ value: e.path === '/sys/class/hwmon' ? [{ name: 'hwmon0', kind: 'other', size: 0, mtimeMs: 0, isLink: true }] : [] }) as any)
   on('process.run', ($, e) => {
     const isDf = e.argv[0] === 'df'
+    if (String(e.argv[1]).endsWith('probe.sh')) {
+      // resource-guard's own probe, answered so its start does not wait on the mock clock
+      const stdout = '{"os":"Linux","cores":2,"mem_total":1,"mem_avail":1,"swap_total":0,"swap_free":0,"load1":0,"cpu":0,"heavy_jobs":0,"systemd":0,"swap_dynamic":1,"tmp":"","top":""}'
+      return { value: { exitCode: 0, stdout, stderr: '' } } as any
+    }
     const stdout = isDf
       ? 'Mounted on 1B-blocks Used\n/ 1000000000000 850000000000\n'
       : '10 (chrome) S 0 0 0 0 0 0 0 0 0 0 100 0 0 0 0 0 0 0 0 0 1000\n11 (chrome) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1000\n'
