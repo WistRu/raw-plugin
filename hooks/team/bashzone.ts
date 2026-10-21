@@ -20,7 +20,11 @@ const GIT_PATHS = new Set(['add', 'commit', 'mv', 'rm', 'apply'])
 // the tree, so a command with them is read as the whole tree.
 const GIT_OPTS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path'])
 const GIT_OPTS_MOVING = new Set(['-C', '--work-tree', '--git-dir'])
-const LEADERS = new Set(['sudo', 'time', 'nice', 'ionice', 'nohup', 'exec', 'builtin', 'command', 'env', 'xargs'])
+// Words that may stand before the program without being it: wrappers, and
+// the shell's own keywords that open a compound command.
+const LEADERS = new Set(['sudo', 'time', 'nice', 'ionice', 'nohup', 'exec', 'builtin', 'command', 'env', 'xargs', 'if', 'then', 'else', 'elif', 'while', 'until', 'do', '!', '{'])
+// Redirection targets that write nothing.
+const SINKS = new Set(['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/tty'])
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash'])
 
 export type WriteTargets = {
@@ -77,6 +81,14 @@ export function tokenize(command: string): Word[][] {
       push()
       segments.push([])
       if ((c === '|' || c === '&') && next === c) i0.i++
+      continue
+    }
+    // a subshell, a group, a command substitution or backticks open a
+    // segment of their own: what is inside is a command too
+    if (c === '(' || c === ')' || c === '`' || c === '}') {
+      if (c === '(' && cur === '$') cur = ''
+      push()
+      segments.push([])
       continue
     }
     if (c === '>' || (c === '<' && next === '>')) {
@@ -159,7 +171,7 @@ function readSegment(words: Word[], out: WriteTargets, shell: Shell): void {
     if (isRedirect(w)) {
       const target = words[i + 1]
       i++
-      if (!target || /^&\d*$/.test(target.text)) continue
+      if (!target || /^&\d*$/.test(target.text) || SINKS.has(target.text)) continue
       out.verbs.push('>')
       out.paths.push(under(shell, target.text))
       continue
@@ -205,7 +217,21 @@ function readSegment(words: Word[], out: WriteTargets, shell: Shell): void {
     } else if (GIT_PATHS.has(verb)) {
       out.verbs.push(`git ${verb}`)
       const dd = after.findIndex(w => w.text === '--')
-      const args = dd >= 0 ? after.slice(dd + 1) : after
+      // before `--`, the value of an option that takes one (`-m "message"`,
+      // `-F file`, `--author=...`) is not a path
+      const VALUED = new Set(['-m', '--message', '-F', '--file', '-C', '-c', '--reuse-message', '--reedit-message', '--author', '--date', '-t', '--template', '--trailer', '--fixup', '--squash'])
+      const before: Word[] = []
+      const head = dd >= 0 ? after.slice(0, dd) : after
+      for (let j = 0; j < head.length; j++) {
+        const w = head[j] ?? { text: '', isQuoted: false }
+        if (!w.isQuoted && VALUED.has(w.text)) {
+          j++
+          continue
+        }
+        if (!w.isQuoted && w.text.startsWith('-')) continue
+        before.push(w)
+      }
+      const args = dd >= 0 ? after.slice(dd + 1) : before
       const paths = args.filter(w => isPathLike(w, true)).map(w => w.text)
       if (shell.cwd !== undefined || paths.length === 0 || after.some(w => !w.isQuoted && (w.text === '-A' || w.text === '-a' || w.text === '--all' || w.text === '.'))) out.isWholeTree = true
       out.paths.push(...paths.filter(p => p !== '.').map(p => under(shell, p)))

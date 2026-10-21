@@ -108,7 +108,7 @@ test('what a Bash command writes is read off its text, quotes honoured', async (
   expect(writeTargets("sed -i 's/a/b/' src/a.ts")).toEqual({ verbs: ['sed'], paths: ['src/a.ts'], isWholeTree: false })
   expect(writeTargets('sed -i s/a/b/ src/a.ts')).toEqual({ verbs: ['sed'], paths: ['src/a.ts'], isWholeTree: false })
   expect(writeTargets('echo hi > out.txt')).toEqual({ verbs: ['>'], paths: ['out.txt'], isWholeTree: false })
-  expect(writeTargets('grep -r foo src 2>/dev/null | tee /tmp/x.log')).toEqual({ verbs: ['>', 'tee'], paths: ['/dev/null', '/tmp/x.log'], isWholeTree: false })
+  expect(writeTargets('grep -r foo src 2>/dev/null | tee /tmp/x.log')).toEqual({ verbs: ['tee'], paths: ['/tmp/x.log'], isWholeTree: false })
   expect(writeTargets('cp a.txt ../b.txt')).toEqual({ verbs: ['cp'], paths: ['a.txt', '../b.txt'], isWholeTree: false })
   expect(writeTargets('git stash')?.isWholeTree).toBe(true)
   expect(writeTargets('git add -A && git commit -m "x"')?.isWholeTree).toBe(true)
@@ -132,6 +132,16 @@ test('what a Bash command writes is read off its text, quotes honoured', async (
   expect(writeTargets('cd /tmp; echo x > out.txt')).toEqual({ verbs: ['>'], paths: ['/tmp/out.txt'], isWholeTree: false })
   expect(writeTargets('cd src && git add a.ts')?.isWholeTree).toBe(true)
   expect(writeTargets('dd if=/dev/zero of=/tmp/blob bs=1M count=1')).toEqual({ verbs: ['dd'], paths: ['/dev/zero', '/tmp/blob'], isWholeTree: false })
+  // the critic's third round: compound commands, a commit message, /dev/null
+  expect(writeTargets('if true; then rm -rf other; fi')).toEqual({ verbs: ['rm'], paths: ['other'], isWholeTree: false })
+  expect(writeTargets('( rm -rf other )')).toEqual({ verbs: ['rm'], paths: ['other'], isWholeTree: false })
+  expect(writeTargets('echo $(rm -rf other)')).toEqual({ verbs: ['rm'], paths: ['other'], isWholeTree: false })
+  expect(writeTargets('x=`rm -rf other`')).toEqual({ verbs: ['rm'], paths: ['other'], isWholeTree: false })
+  expect(writeTargets('for f in a b; do touch "$f.txt"; done')).toEqual({ verbs: ['touch'], paths: ['$f.txt'], isWholeTree: false })
+  expect(writeTargets('git commit -m "fix things" src/a.ts')).toEqual({ verbs: ['git commit'], paths: ['src/a.ts'], isWholeTree: false })
+  expect(writeTargets('git commit -m "fix things"')?.isWholeTree).toBe(true)
+  expect(writeTargets('find . -name x 2>/dev/null')).toBeUndefined()
+  expect(writeTargets('ls > /dev/null; cat a.md >/dev/stderr')).toBeUndefined()
 })
 
 // What the engine answers beneath the plugin. With `bound`, the registry
