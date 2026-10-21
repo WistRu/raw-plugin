@@ -46,6 +46,7 @@ export type TeamView = {
 
 declare module 'claude-code' {
   interface PluginState {
-    rp: { snap: Snapshot | null; isLineOn: boolean; team: TeamView | null }
+    // isWorktreeGuardOn: /worktree off lifts the worktree guard for the session.
+    rp: { snap: Snapshot | null; isLineOn: boolean; team: TeamView | null; isWorktreeGuardOn: boolean }
   }
 }

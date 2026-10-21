@@ -186,6 +186,41 @@ out. Not yet tried against a live desktop: whether `start_session` can be
 called from a hook, and whether a message a plugin sends wakes the other
 session, are the first two things to check.
 
+### worktree
+
+Every code change goes in its own git worktree and branch, is landed on the
+main branch with a fast-forward, then the worktree and the branch are
+deleted. It works in any git repository with no configuration; the engine
+makes the worktrees (`EnterWorktree`, the desktop app's worktree checkbox,
+agents with `isolation: worktree`), the module adds the rule, its guard and
+the landing.
+
+- **What it reads**: the main working tree is `$.session.repo().root`; the
+  main branch is what `origin/HEAD` points at, else `main`, else `master`
+  (each only when a local branch of that name exists). None of them: the
+  module is silent in that repository. "Code" is every file git tracks;
+  untracked and ignored paths are never refused. Every path is compared as
+  a real path, so a root reached through a symlink is the same tree as its
+  target, and the tree a path belongs to is the deepest registered worktree
+  that holds it (a worktree nested inside the main tree, such as
+  `.claude/worktrees/<name>`, owns its own files).
+- **The guard**: Edit, Write, MultiEdit and NotebookEdit on a tracked file of
+  the main tree are refused with the way out: `EnterWorktree` (or the app's
+  worktree checkbox for a new session), or `/worktree off`. A Bash command is
+  read for what it writes by the team module's `hooks/team/bashzone.ts`;
+  each path is judged the same way, and a verb that rewrites the whole tree
+  (`git commit` with no paths, `git stash`, `git checkout`, `git merge`, ...)
+  is refused when the command runs in the main tree. Writes in a worktree
+  and outside the repository always go through. A guard that cannot read
+  the repository lets the write through and says so once.
+- **`/worktree off`** and **`/worktree on`** lift and restore the guard for
+  this session (`rp.isWorktreeGuardOn` in `$.state`).
+- **`.claude/rp-worktree.json`** in the main tree, optional, three keys and
+  no others: `code` (path prefixes that alone count as code; everything
+  else is free), `preLand` and `postLand` (below). A file that does not
+  parse is ignored by the guard (every tracked file is code) and refuses the
+  landing until it is fixed.
+
 ## Install
 
 ```
