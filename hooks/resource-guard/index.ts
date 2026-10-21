@@ -41,6 +41,8 @@ const HOT_C = 95
 const DISK_FULL_PCT = 95
 // A sysmon sample older than this is not used in place of the probe (ms).
 const SAMPLE_FRESH_MS = 3000
+// How long a probe waits for sysmon's first sample after the start (ms).
+const FIRST_SAMPLE_MS = 2000
 
 // ---- Probe ----------------------------------------------------------------
 
@@ -92,6 +94,11 @@ let starting: Promise<void> | undefined
 
 async function probe($: EngineInterface): Promise<Probe> {
   if (starting) await starting
+  // Right after the start sysmon may not have sampled yet: wait for its
+  // first sample a little, so the first answer carries the same figures.
+  for (let waited = 0; profile?.os === 'Linux' && !latest() && waited < FIRST_SAMPLE_MS; waited += 100) {
+    await $.clock.sleep(100)
+  }
   return probeNow($)
 }
 
