@@ -14,7 +14,6 @@ export const TEAMS = '.claude/teams'
 // A lock older than this is a dead session's and is taken over.
 const LOCK_STALE_MS = 30_000
 const LOCK_WAIT_MS = 10_000
-const LOCK_STEP_MS = 100
 // The plugin's own registry of which session is in which team.
 const BIND_KEY = 'team:bind'
 
@@ -56,24 +55,32 @@ export async function writeJson($: EngineInterface, path: string, value: unknown
   if (exitCode !== 0) throw new Error(`mv ${tmp} ${path} exited ${exitCode}: ${stderr.trim()}`)
 }
 
-// One lock per team folder: `mkdir` is atomic, so whoever makes the
-// directory holds it. A lock a dead session left is taken over after
-// LOCK_STALE_MS.
+// The wait for the lock, as one shell process: a hook has 10 s of its own
+// time per dispatch and `$.clock.sleep` spends it, while a `$.process.run`
+// is free. `mkdir` is atomic, so whoever makes the directory holds it. A
+// lock older than the stale limit is taken over by renaming it first (one
+// `mv` of a directory succeeds, the other fails), so two sessions never
+// both believe they removed it and both hold the new one.
+const LOCK_SH = `lock="$1"; wait_s="$2"; stale_s="$3"
+deadline=$(( $(date +%s) + wait_s ))
+while ! mkdir "$lock" 2>/dev/null; do
+  now=$(date +%s)
+  mtime=$(stat -c %Y "$lock" 2>/dev/null || stat -f %m "$lock" 2>/dev/null || echo "$now")
+  if [ $(( now - mtime )) -gt "$stale_s" ] && mv "$lock" "$lock.stale.$$" 2>/dev/null; then
+    rmdir "$lock.stale.$$" 2>/dev/null
+    continue
+  fi
+  [ "$now" -ge "$deadline" ] && exit 3
+  sleep 0.2
+done
+exit 0
+`
+
 export async function withLock<T>($: EngineInterface, dir: string, fn: () => Promise<T>): Promise<T> {
   const lock = `${dir}/.lock`
-  const deadline = (await $.clock.now()) + LOCK_WAIT_MS
-  for (;;) {
-    const made = await $.process.run(['mkdir', lock], { timeoutMs: 5000 })
-    if (made.exitCode === 0) break
-    const now = await $.clock.now()
-    const age = await $.fs.stat(lock).then(s => now - s.mtimeMs).catch(() => 0)
-    if (age > LOCK_STALE_MS) {
-      await $.process.run(['rmdir', lock], { timeoutMs: 5000 }).catch(() => undefined)
-      continue
-    }
-    if (now > deadline) throw new Error(`${lock} is held by another session; retry`)
-    await $.clock.sleep(LOCK_STEP_MS)
-  }
+  await $.fs.write(`${dir}/.keep`, '')
+  const got = await $.process.run(['sh', '-c', LOCK_SH, 'lock', lock, String(LOCK_WAIT_MS / 1000), String(LOCK_STALE_MS / 1000)], { timeoutMs: LOCK_WAIT_MS + 5000 })
+  if (got.exitCode !== 0) throw new Error(`${lock} is held by another session; retry`)
   try {
     return await fn()
   } finally {
@@ -176,9 +183,16 @@ f="$dir/inbox/$role/$stamp-job-$$.md"
 { echo "from: job"; echo "at: $stamp"; [ -n "$path" ] && echo "path: $path"; echo; echo "$what"; } > "$f.tmp" && mv "$f.tmp" "$f"
 `
 
+// The teams folder itself is never committed: one .gitignore at its root
+// covers every team and every session's own folder under it.
+export async function ensureBase($: EngineInterface, base: string): Promise<void> {
+  if (!(await $.fs.exists(`${base}/.gitignore`))) await $.fs.write(`${base}/.gitignore`, '*\n')
+}
+
 // Lays the folder out: the card, an empty ledger, a note per role, the
 // inboxes, notify.sh, and a .gitignore so nothing of it is ever committed.
 export async function layOut($: EngineInterface, team: Team): Promise<void> {
+  await ensureBase($, team.dir.slice(0, team.dir.lastIndexOf('/')))
   await writeJson($, teamFile(team.dir), team)
   await writeJson($, ledgerFile(team.dir), emptyLedger())
   await $.fs.write(`${team.dir}/CARD.md`, cardText(team) + '\n')

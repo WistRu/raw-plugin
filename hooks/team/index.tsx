@@ -29,8 +29,8 @@ import {
 } from './critic'
 import type { Membership } from './folder'
 import {
-  ackEvent, appendInbox, bindSession, inboxDir, layOut, listTeams, membership, noteFile, queueBlock, readJson, readLedger, readTeam, replaceQueue,
-  stateFile, teamsDir, unbindSession, unreadEvents, updateLedger, updateTeam, writeEvent, writeJson,
+  ackEvent, appendInbox, bindSession, ensureBase, inboxDir, layOut, listTeams, membership, noteFile, queueBlock, readJson, readLedger, readTeam,
+  replaceQueue, stateFile, teamsDir, unbindSession, unreadEvents, updateLedger, updateTeam, writeEvent, writeJson,
 } from './folder'
 import type { Ledger, SetArgs, Status, Wake } from './ledger'
 import { addTask, board, setTask } from './ledger'
@@ -67,6 +67,8 @@ const misses = new Map<string, number>()
 // and a `$` call's time is free, so the wait is a `$.process.run` that
 // watches for the file, never a promise of the module's own.
 const pending = new Map<string, string>()
+// Every critic agent spawned this session: its Bash is held to reading.
+const critics = new Set<string>()
 
 type Input = Record<string, unknown>
 const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback)
@@ -76,14 +78,27 @@ async function stamp($: EngineInterface): Promise<string> {
   return new Date(await $.clock.now()).toISOString().slice(0, 16) + 'Z'
 }
 
-// This session's desktop address, when the app's tool is there to ask.
+// This session's desktop address, when the app's tool is there to ask;
+// asked once per session, a miss included.
+let addressAsked = false
 async function ownAddress($: EngineInterface): Promise<string | undefined> {
-  if (myAddress) return myAddress
+  if (myAddress || addressAsked) return myAddress
+  addressAsked = true
   const tools = (await $.tool.list().catch(() => [])).map(t => t.name)
   if (!tools.includes(GET_SESSION)) return undefined
   const ran = await $.tool.call({ tool: GET_SESSION, session_id: 'self' } as never).catch(() => undefined)
   myAddress = ran && 'text' in ran ? ran.text?.match(/local_[0-9a-f-]{8,}/)?.[0] : undefined
   return myAddress
+}
+
+// The desktop app's own message tool: the path proved to wake a stopped
+// session (2026-09-30), tried when the engine's send does not deliver.
+const SEND_MESSAGE = 'mcp__ccd_session_mgmt__send_message'
+async function sendByApp($: EngineInterface, address: string, text: string): Promise<boolean> {
+  const tools = (await $.tool.list().catch(() => [])).map(t => t.name)
+  if (!tools.includes(SEND_MESSAGE)) return false
+  const ran = await $.tool.call({ tool: SEND_MESSAGE, session_id: address, message: text } as never).catch(() => undefined)
+  return Boolean(ran && 'text' in ran && ran.text && /delivered|queued/i.test(ran.text) && !ran.isError)
 }
 
 // Writes this session's engine id into the roster, as the lead or a role,
@@ -169,8 +184,11 @@ async function deliver($: EngineInterface, team: Team, role: string, from: strin
   if (to === undefined) return false
   const myId = await $.session.id()
   if (to === myAddress || (typeof to === 'object' && 'sessionId' in to && to.sessionId === myId)) return false
-  const sent = await $.session.send({ to, text: `[rp team ${team.slug}] from ${from}: ${text}` }).catch(() => ({ isDelivered: false as const }))
-  return sent.isDelivered
+  const body = `[rp team ${team.slug}] from ${from}: ${text}`
+  const sent = await $.session.send({ to, text: body }).catch(() => ({ isDelivered: false as const }))
+  if (sent.isDelivered) return true
+  // a desktop address the engine could not reach: the app's own tool
+  return typeof to === 'string' && to.startsWith('local_') ? sendByApp($, to, body) : false
 }
 
 // Sent now when the role can be reached; else one event file in its inbox,
@@ -414,6 +432,7 @@ async function askCritic($: EngineInterface, team: Team, prompt: string, descrip
   if ('deny' in spawned && spawned.deny) throw new Error(`the critic could not start: ${spawned.deny}`)
   if (!('agentId' in spawned) || !spawned.agentId) throw new Error('the critic could not start: no agent id')
   const agentId = spawned.agentId
+  critics.add(agentId)
   const file = `${runsDir(team)}/.reply-${agentId.replace(/[^A-Za-z0-9_-]/g, '')}`
   pending.set(agentId, file)
   try {
@@ -484,6 +503,7 @@ async function answerTool($: EngineInterface, m: Membership, input: Input): Prom
 }
 
 async function reviewTool($: EngineInterface, m: Membership, input: Input): Promise<string> {
+  await ensureBase($, await teamsDir($))
   const dir = `${m.team.dir}/review`
   const prior = (await $.fs.list(dir).catch(() => [])).filter(e => e.kind === 'file' && /^ledger-.*\.md$/.test(e.name)).map(e => `${dir}/${e.name}`).sort()
   const k = (await $.fs.list(dir).catch(() => [])).filter(e => e.kind === 'file' && /^digest-\d+\.md$/.test(e.name)).reduce((n, e) => Math.max(n, Number(e.name.match(/\d+/)?.[0] ?? 0)), 0) + 1
@@ -714,9 +734,16 @@ async function soloMembership($: EngineInterface): Promise<Membership> {
   }
 }
 
-async function teamOf($: EngineInterface): Promise<{ me: Membership } | { text: string }> {
+// Who is calling: the session's membership, or, for a call made inside a
+// subagent that is a role (the terminal fallback), that role.
+async function teamOf($: EngineInterface, agentId?: string): Promise<{ me: Membership } | { text: string }> {
   const m = await who($)
-  return m ? { me: m } : { text: 'This session is in no team. /team <task> drafts one; mcp__rp__team_join joins one.' }
+  if (!m) return { text: 'This session is in no team. /team <task> drafts one; mcp__rp__team_join joins one.' }
+  if (agentId) {
+    const role = m.team.roles.find(r => r.agentId === agentId)
+    if (role) return { me: { team: m.team, role: role.name } }
+  }
+  return { me: m }
 }
 
 function roleFrom(input: Input): Role {
@@ -928,9 +955,11 @@ type Zone = { role: Role; allowed: string[] }
 // The paths a member may write: its zone, and inside the team folder its
 // own note and inbox; the roster and the ledger are the tools' to change.
 // Undefined for the lead and for a session in no team.
-async function zoneOf($: EngineInterface): Promise<Zone | undefined> {
-  const m = await who($)
-  if (!m || m.role === 'lead') return undefined
+async function zoneOf($: EngineInterface, agentId?: string): Promise<Zone | undefined> {
+  const got = await teamOf($, agentId)
+  if ('text' in got) return undefined
+  const m = got.me
+  if (m.role === 'lead') return undefined
   const role = m.team.roles.find(r => r.name === m.role)
   if (!role) return undefined
   const resolved = async (p: string) => (await $.fs.stat(p, { resolve: true }).catch(() => undefined))?.realPath ?? p
@@ -941,8 +970,8 @@ async function zoneOf($: EngineInterface): Promise<Zone | undefined> {
 
 const isInside = (zone: Zone, real: string) => zone.allowed.some(a => real === a || real.startsWith(`${a}/`))
 
-async function outsideZone($: EngineInterface, path: string): Promise<string | undefined> {
-  const zone = await zoneOf($)
+async function outsideZone($: EngineInterface, path: string, agentId?: string): Promise<string | undefined> {
+  const zone = await zoneOf($, agentId)
   if (!zone) return undefined
   const real = await placed($, path)
   if (real === undefined) return `${$.plugin.name}: cannot place ${path}; a member edits only inside its zone`
@@ -950,8 +979,13 @@ async function outsideZone($: EngineInterface, path: string): Promise<string | u
 }
 
 // The second layer: what a Bash command writes, read off its text.
-async function bashOutsideZone($: EngineInterface, command: string): Promise<string | undefined> {
-  const zone = await zoneOf($)
+async function bashOutsideZone($: EngineInterface, command: string, agentId?: string): Promise<string | undefined> {
+  // a critic reads; its Bash never writes
+  if (agentId && critics.has(agentId)) {
+    const targets = writeTargets(command)
+    return targets ? `${$.plugin.name}: the critic only reads; ${targets.verbs.join(', ')} would write (${targets.isWholeTree ? 'the tree' : targets.paths.join(', ')}).` : undefined
+  }
+  const zone = await zoneOf($, agentId)
   if (!zone) return undefined
   const targets = writeTargets(command)
   if (!targets) return undefined
@@ -1051,22 +1085,29 @@ export async function teamSection($: EngineInterface): Promise<PromptComposeSect
 export async function startTeam($: EngineInterface): Promise<void> {
   await $.command.register({ name: 'team', description: 'A team of sessions for one task: /team <task> drafts it, "status" draws the board, "close" ends it', argumentHint: '<task> | status | close' })
   for (const tool of TOOLS) await $.tool.register(tool)
+  // A different model from the author's, so the blind spots differ: Opus
+  // for a session on anything else, Sonnet for a session on Opus (the
+  // operator allows nothing above Opus for a subagent).
+  const main = await $.session.model().catch(() => '')
+  const criticModel = /opus/i.test(main) ? 'sonnet' : 'opus'
   await $.agent.register({
     name: CRITIC,
     description: 'The team critic: a fresh reader of a result or a session. Spawned by mcp__rp__team_critic, team_answer and team_review, not by the model.',
     prompt: CRITIC_SYSTEM,
     tools: ['Read', 'Grep', 'Glob', 'Bash'],
-    model: 'opus',
+    model: criticModel,
   }).catch(err => $.ui.log(`${$.plugin.name}: the critic agent could not be registered: ${String(err)}`, { to: 'debug' }))
   me = undefined
   meAt = 0
   rebind = undefined
   myAddress = undefined
+  addressAsked = false
   poll?.cancel()
   poll = undefined
   polling = false
   misses.clear()
   pending.clear()
+  critics.clear()
   const m = await who($)
   if (m?.role === 'lead') {
     armPoll($, m.team)
@@ -1114,25 +1155,25 @@ export function registerTeam(on: On): void {
 
   on('tool.call', { tool: 'mcp__rp__team_task' }, ($, e) =>
     safely(async () => {
-      const got = await teamOf($)
+      const got = await teamOf($, e.agentId)
       return 'text' in got ? got.text : taskTool($, got.me, e as unknown as Input)
     }),
   )
   on('tool.call', { tool: 'mcp__rp__team_handoff' }, ($, e) =>
     safely(async () => {
-      const got = await teamOf($)
+      const got = await teamOf($, e.agentId)
       return 'text' in got ? got.text : handoffTool($, got.me, e as unknown as Input)
     }),
   )
   on('tool.call', { tool: 'mcp__rp__team_critic' }, ($, e) =>
     safely(async () => {
-      const got = await teamOf($)
+      const got = await teamOf($, e.agentId)
       return 'text' in got ? got.text : criticTool($, got.me, e as unknown as Input)
     }),
   )
   on('tool.call', { tool: 'mcp__rp__team_answer' }, ($, e) =>
     safely(async () => {
-      const got = await teamOf($)
+      const got = await teamOf($, e.agentId)
       return 'text' in got ? got.text : answerTool($, got.me, e as unknown as Input)
     }),
   )
@@ -1140,20 +1181,20 @@ export function registerTeam(on: On): void {
   // a folder of its own beside the teams.
   on('tool.call', { tool: 'mcp__rp__team_review' }, ($, e) =>
     safely(async () => {
-      const got = await teamOf($)
+      const got = await teamOf($, e.agentId)
       const m = 'me' in got ? got.me : await soloMembership($)
       return reviewTool($, m, e as unknown as Input)
     }),
   )
   on('tool.call', { tool: 'mcp__rp__team_checklist' }, ($, e) =>
     safely(async () => {
-      const got = await teamOf($)
+      const got = await teamOf($, e.agentId)
       return 'text' in got ? got.text : checklistTool($, got.me, e as unknown as Input)
     }),
   )
   on('tool.call', { tool: 'mcp__rp__team_predict' }, ($, e) =>
     safely(async () => {
-      const got = await teamOf($)
+      const got = await teamOf($, e.agentId)
       return 'text' in got ? got.text : predictTool($, got.me, e as unknown as Input)
     }),
   )
@@ -1168,13 +1209,13 @@ export function registerTeam(on: On): void {
   )
   on('tool.call', { tool: 'mcp__rp__team_role' }, ($, e) =>
     safely(async () => {
-      const got = await teamOf($)
+      const got = await teamOf($, e.agentId)
       return 'text' in got ? got.text : roleTool($, got.me, e as unknown as Input)
     }),
   )
   on('tool.call', { tool: 'mcp__rp__team_notify' }, ($, e) =>
     safely(async () => {
-      const got = await teamOf($)
+      const got = await teamOf($, e.agentId)
       if ('text' in got) return got.text
       const input = e as unknown as Input
       const role = str(input.role) === 'lead' ? 'lead' : slugify(str(input.role))
@@ -1186,16 +1227,16 @@ export function registerTeam(on: On): void {
   // A member edits only inside its zone and its own files of the team folder.
   for (const tool of ['Edit', 'Write', 'MultiEdit'] as const) {
     on('tool.call', { tool }, async ($, e, next) => {
-      const why = await outsideZone($, (e as unknown as { file_path: string }).file_path)
+      const why = e.agentId && critics.has(e.agentId) ? `${$.plugin.name}: the critic only reads.` : await outsideZone($, (e as unknown as { file_path: string }).file_path, e.agentId)
       return why ? { deny: why } : next(e)
     }).catch(($, e, next) => (next.called ? next(e) : { deny: `${$.plugin.name}: the zone guard failed.` }))
   }
   on('tool.call', { tool: 'NotebookEdit' }, async ($, e, next) => {
-    const why = await outsideZone($, (e as unknown as { notebook_path: string }).notebook_path)
+    const why = e.agentId && critics.has(e.agentId) ? `${$.plugin.name}: the critic only reads.` : await outsideZone($, (e as unknown as { notebook_path: string }).notebook_path, e.agentId)
     return why ? { deny: why } : next(e)
   }).catch(($, e, next) => (next.called ? next(e) : { deny: `${$.plugin.name}: the zone guard failed.` }))
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    const why = await bashOutsideZone($, e.command)
+    const why = await bashOutsideZone($, e.command, e.agentId)
     return why ? { deny: why } : next(e)
   }).catch(($, e, next) => (next.called ? next(e) : { deny: `${$.plugin.name}: the zone guard failed.` }))
 

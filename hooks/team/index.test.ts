@@ -101,7 +101,7 @@ test('the card, the brief and the queue block are text the model can read', asyn
   expect(replaceQueue('# r -- handoff\n\n## Inbox\n', 'h', '- d')).toBe('# r -- handoff\n\n## Queue (h)\n\n- d\n\n## Inbox\n')
 })
 
-test('what a Bash command writes is read off its text', async () => {
+test('what a Bash command writes is read off its text, quotes honoured', async () => {
   expect(writeTargets('git status && ls src')).toBeUndefined()
   expect(writeTargets('cargo test -p x')).toBeUndefined()
   expect(writeTargets("sed 's/a/b/' src/a.ts | head")).toBeUndefined()
@@ -115,6 +115,14 @@ test('what a Bash command writes is read off its text', async () => {
   expect(writeTargets('git add src/a.ts')).toEqual({ verbs: ['git add'], paths: ['src/a.ts'], isWholeTree: false })
   expect(writeTargets('git log --oneline -- src')).toBeUndefined()
   expect(writeTargets('mkdir -p ~/scratch')).toEqual({ verbs: ['mkdir'], paths: ['~/scratch'], isWholeTree: false })
+  // the critic's cases: a quoted target, a quoted destination, bash -c, git -C, git add .
+  expect(writeTargets('echo x > "other/f.txt"')).toEqual({ verbs: ['>'], paths: ['other/f.txt'], isWholeTree: false })
+  expect(writeTargets('cp a.txt "other/zone/f.txt"')).toEqual({ verbs: ['cp'], paths: ['a.txt', 'other/zone/f.txt'], isWholeTree: false })
+  expect(writeTargets('bash -c "rm -rf other/"')).toEqual({ verbs: ['rm'], paths: ['other/'], isWholeTree: false })
+  expect(writeTargets('git -C /other add .')?.isWholeTree).toBe(true)
+  expect(writeTargets('git add .')?.isWholeTree).toBe(true)
+  expect(writeTargets("git commit -m 'fix a.ts and b.ts' -- src/a.ts")).toEqual({ verbs: ['git commit'], paths: ['src/a.ts'], isWholeTree: false })
+  expect(writeTargets('sudo -u wist tee /etc/x <<< y')).toEqual({ verbs: ['tee'], paths: ['/etc/x'], isWholeTree: false })
 })
 
 // What the engine answers beneath the plugin. With `bound`, the registry
@@ -125,6 +133,7 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], bound = false) {
   const files = new Map<string, string>()
   if (bound) files.set(`${DIR}/team.json`, JSON.stringify(t))
   const calls: string[] = []
+  const runs: string[][] = []
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('tool.register', (_, e) => ({ value: { tool: `mcp__rp__${e.name}` } }))
   on('agent.register', (_, e) => ({ value: { agent: `rp:${e.name}` } }))
@@ -153,16 +162,28 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], bound = false) {
   on('clock.now', () => ({ value: 1_700_000_000_000 }))
   on('clock.every', () => ({ value: undefined }))
   on('clock.sleep', () => ({ value: undefined }))
-  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('process.run', (_, e) => {
+    runs.push([...e.argv])
+    // `mv tmp target` is how a JSON file is written: the world keeps it
+    if (e.argv[0] === 'mv' && e.argv[1] === '-f') {
+      const text = files.get(String(e.argv[2]))
+      if (text !== undefined) {
+        files.set(String(e.argv[3]), text)
+        files.delete(String(e.argv[2]))
+      }
+    }
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
   on('store.get', () => ({ value: bound ? { 'engine-id': { dir: DIR, role: 'builder' } } : undefined }))
   on('store.set', () => ({ value: undefined }))
+  on('session.send', () => ({ isDelivered: false, reason: 'test' }))
   on('tool.call', (_, e) => {
     calls.push(e.tool)
     return { result: 'ran', text: 'ran' }
   })
-  return { files, calls }
+  return { files, calls, runs }
 }
 
 const start = ($: Parameters<Parameters<typeof test>[1]>[0]) => $.session.start({ cwd: '/p', surface: 'desktop', isInteractive: true })
@@ -203,7 +224,21 @@ test('a member edits inside its zone and its own note, nowhere else', async ($, 
   expect((await bash('git status')).deny).toBeUndefined()
   expect((await bash("sed -i 's/a/b/' src/a.ts")).deny).toBeUndefined()
   expect((await bash('echo x > /p/docs/out.md')).deny).toMatch(/would write \/p\/docs\/out\.md/)
+  expect((await bash('echo x > "/p/docs/out.md"')).deny).toMatch(/would write \/p\/docs\/out\.md/)
   expect((await bash('git stash')).deny).toMatch(/rewrites the tree/)
   expect((await bash('git add -A')).deny).toMatch(/rewrites the tree/)
   expect((await bash('cp src/a.ts ~/a.ts')).deny).toMatch(/would write ~\/a\.ts/)
+})
+
+test('a ledger write takes the folder lock in a process and gives it back', async ($, on) => {
+  const { runs } = engine(on, true)
+  await start($)
+  const before = runs.length
+  const added = await $.tool.call({ tool: 'mcp__rp__team_task', action: 'add', title: 'x', owner: 'builder' } as never)
+  expect(added.text).toMatch(/^T-0001 ready: x/)
+  const mine = runs.slice(before)
+  const lock = mine.find(r => r[0] === 'sh' && r[3] === 'lock')
+  expect(lock?.[4]).toBe(`${DIR}/.lock`)
+  expect(mine.some(r => r[0] === 'rmdir' && r[1] === `${DIR}/.lock`)).toBe(true)
+  expect(mine.some(r => r[0] === 'mv' && String(r[3]).endsWith('/tasks.json'))).toBe(true)
 })

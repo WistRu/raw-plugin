@@ -24,9 +24,15 @@ test('done-claims need their proof: a passing run, a git commit, a written file'
   expect(doneClaims('I wrote `docs/plan.md` and updated src/x.ts; tests passed; committed as abc1234.')).toEqual({ files: ['docs/plan.md', 'src/x.ts'], tests: true, commits: true })
   expect(doneClaims('Тесты прошли, записал отчёт в out/report.md.').files).toEqual(['out/report.md'])
   const noProof = auditDone('tests passed; committed abc1234', { toolTexts: ['3 failed, 20 passed'], commands: ['git status'] })
-  expect(noProof.map(f => f.kind).sort()).toEqual(['commit', 'tests'])
-  const proof = auditDone('tests passed; committed abc1234', { toolTexts: ['23 passed in 1.2s'], commands: ['git commit -m x'] })
+  expect(noProof.map(f => f.kind).sort()).toEqual(['commit', 'commit', 'tests'])
+  const proof = auditDone('tests passed; committed abc1234', { toolTexts: ['23 passed in 1.2s', 'abc1234 fix: x'], commands: ['git commit -m x'] })
   expect(proof).toEqual([])
+  // an old green run does not cover a newer red one
+  const stale = auditDone('tests passed', { toolTexts: ['23 passed in 1.2s', 'edited', '1 failed, 22 passed'], commands: [] })
+  expect(stale.map(f => f.text)).toEqual(['the result says the tests pass, but the newest test output of this session shows failures'])
+  // a commit hash the record never showed
+  const ghost = auditDone('committed deadbeef1', { toolTexts: ['[main 5c515a9] x'], commands: ['git commit -q -F msg'] })
+  expect(ghost.map(f => f.text)).toEqual(['the commit deadbeef1 appears in no tool output of this session (no git log or commit line shows it)'])
 })
 
 test('arithmetic lines are recomputed', async () => {

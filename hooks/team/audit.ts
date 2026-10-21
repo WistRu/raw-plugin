@@ -108,16 +108,28 @@ export function doneClaims(result: string): DoneClaims {
 
 const PASS = /\b(\d+)\s+(pass(ed|ing)?|passed)\b|\bok\b.*\b\d+\s+passed|\d+\s+tests?\s+(passed|ok)/i
 const FAIL = /\b([1-9]\d*)\s+(fail(ed|ing|ures?)?|error(s)?)\b|FAILED|Traceback|panicked/
+const RAN = /\bRan \d+ tests?\b|\btest result:|\d+ passed|\d+ pass\b|\d+ fail(ed)?\b/i
 
+// "Tests pass" is proved by the NEWEST test output of the session, not by
+// any green one; "committed <hash>" by that hash in some output.
 export function auditDone(result: string, evidence: Evidence): Finding[] {
   const out: Finding[] = []
   const claims = doneClaims(result)
   if (claims.tests) {
-    const proof = evidence.toolTexts.find(t => PASS.test(t) && !FAIL.test(t))
-    if (!proof) out.push({ kind: 'tests', severity: 'blocking', text: 'the result says the tests pass, but no tool output of this session shows a passing run without failures' })
+    const newest = [...evidence.toolTexts].reverse().find(t => RAN.test(t) || PASS.test(t) || FAIL.test(t))
+    if (!newest) out.push({ kind: 'tests', severity: 'blocking', text: 'the result says the tests pass, but no tool output of this session shows a test run' })
+    else if (FAIL.test(newest)) out.push({ kind: 'tests', severity: 'blocking', text: 'the result says the tests pass, but the newest test output of this session shows failures' })
+    else if (!PASS.test(newest) && !/\bRan \d+ tests?\b/i.test(newest)) out.push({ kind: 'tests', severity: 'note', text: 'the newest test output of this session names no passing count; the claim rests on it' })
   }
-  if (claims.commits && !evidence.commands.some(c => /\bgit\s+commit\b/.test(c)))
-    out.push({ kind: 'commit', severity: 'blocking', text: 'the result says something was committed, but no Bash call of this session ran git commit' })
+  if (claims.commits) {
+    if (!evidence.commands.some(c => /\bgit\s+commit\b/.test(c)))
+      out.push({ kind: 'commit', severity: 'blocking', text: 'the result says something was committed, but no Bash call of this session ran git commit' })
+    const hashes = [...result.matchAll(/(?<![\w/])([0-9a-f]{7,40})(?![\w/])/g)].map(m => m[1] ?? '').filter(h => /[a-f]/.test(h) && /\d/.test(h))
+    const all = evidence.toolTexts.join('\n')
+    for (const h of [...new Set(hashes)].slice(0, 5)) {
+      if (!all.includes(h)) out.push({ kind: 'commit', severity: 'blocking', text: `the commit ${h} appears in no tool output of this session (no git log or commit line shows it)` })
+    }
+  }
   return out
 }
 
@@ -147,14 +159,19 @@ export function auditText(result: string, evidence: Evidence): Finding[] {
   return [...auditFigures(result, evidence), ...auditCommands(result, evidence), ...auditDone(result, evidence), ...auditArithmetic(result)]
 }
 
+// What the audit does not see, said every time so a clean report is read
+// for what it is.
+export const AUDIT_SCOPE = 'Not checked: figures of one digit, words without numbers, whether a figure found in an output means what the result says, anything outside this session\'s record.'
+
 export function renderFindings(findings: Finding[], fileFindings: Finding[] = []): string {
   const all = [...findings, ...fileFindings]
-  if (all.length === 0) return 'AUDIT: nothing to report (every figure, command, file, test and sum checked out against the record).'
+  if (all.length === 0) return `AUDIT: nothing to report (every figure of two or more digits, quoted command, file said written, test claim and sum checked out against the record). ${AUDIT_SCOPE}`
   const blocking = all.filter(f => f.severity === 'blocking')
   const notes = all.filter(f => f.severity === 'note')
   return [
     `AUDIT: ${blocking.length} blocking, ${notes.length} note(s).`,
     ...blocking.map((f, i) => `B${i + 1} [${f.kind}] ${f.text}`),
     ...notes.map((f, i) => `N${i + 1} [${f.kind}] ${f.text}`),
+    AUDIT_SCOPE,
   ].join('\n')
 }
