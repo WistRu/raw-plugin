@@ -40,10 +40,18 @@ export function figures(text: string): string[] {
   return [...out]
 }
 
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// A figure is found whole, not as part of another number: 12 is not in
+// 312, 2012 or 12.5.
+export function hasFigure(haystack: string, figure: string): boolean {
+  return new RegExp(`(?<![\\d.])${escapeRe(figure.replace(/^-/, ''))}(?![\\d.])`).test(haystack)
+}
+
 export function auditFigures(result: string, evidence: Evidence): Finding[] {
   const haystack = normalize(evidence.toolTexts.join('\n'))
-  const missing = figures(result).filter(f => !haystack.includes(f.replace(/^-/, '')))
-  return missing.slice(0, MAX_PER_KIND).map(f => ({ kind: 'figure', severity: 'blocking', text: `the figure ${f} appears in no tool output of this session` }))
+  const missing = figures(result).filter(f => !hasFigure(haystack, f))
+  return missing.slice(0, MAX_PER_KIND).map(f => ({ kind: 'figure', severity: 'blocking', text: `the figure ${f} appears whole in no tool output of this session` }))
 }
 
 // Commands the result says were run: inline code that starts with a verb.
@@ -170,7 +178,7 @@ export function auditText(result: string, evidence: Evidence): Finding[] {
 
 // What the audit does not see, said every time so a clean report is read
 // for what it is.
-export const AUDIT_SCOPE = 'Not checked: figures of one digit, words without numbers, whether a figure found in an output means what the result says, anything outside this session\'s record.'
+export const AUDIT_SCOPE = 'Not checked: figures of one digit, words without numbers, whether a figure found whole in an output means what the result says, anything outside this session\'s record.'
 
 export function renderFindings(findings: Finding[], fileFindings: Finding[] = []): string {
   const all = [...findings, ...fileFindings]

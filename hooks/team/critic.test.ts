@@ -14,7 +14,11 @@ test('the audit names a figure no tool output carries, and a quoted command neve
   const ok = auditFigures('318 slots, net 1,234.5', evidence)
   expect(ok).toEqual([])
   const bad = auditFigures('318 slots, net 1,234.5, 42 wins', evidence)
-  expect(bad.map(f => f.text)).toEqual(['the figure 42 appears in no tool output of this session'])
+  expect(bad.map(f => f.text)).toEqual(['the figure 42 appears whole in no tool output of this session'])
+  // whole figures only: 12 is not in 312, 2012 or 12.5
+  const parts = { toolTexts: ['312 rows, year 2012, ratio 12.5'], commands: [] }
+  expect(auditFigures('12 rows', parts).map(f => f.text)).toEqual(['the figure 12 appears whole in no tool output of this session'])
+  expect(auditFigures('312 rows and 12.5', parts)).toEqual([])
   expect(claimedCommands('ran `uv run pytest -q` and `cargo test -p x`; see `notes.md`')).toEqual(['uv run pytest -q', 'cargo test -p x'])
   expect(auditCommands('ran `cargo test -p x`', evidence).map(f => f.kind)).toEqual(['command'])
   expect(auditCommands('ran `uv run pytest -q`', evidence)).toEqual([])

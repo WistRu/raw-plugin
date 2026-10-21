@@ -183,6 +183,9 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], bound = false) {
   on('clock.sleep', () => ({ value: undefined }))
   on('process.run', (_, e) => {
     runs.push([...e.argv])
+    // this world has no flock: the mkdir lock is what the test can see
+    if (e.argv[0] === 'sh' && String(e.argv[2]).includes('command -v flock'))
+      return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     // `mv tmp target` is how a JSON file is written: the world keeps it
     if (e.argv[0] === 'mv' && e.argv[1] === '-f') {
       const text = files.get(String(e.argv[2]))
@@ -252,7 +255,7 @@ test('a member edits inside its zone and its own note, nowhere else', async ($, 
   expect((await bash('touch src/new.ts')).deny).toBeUndefined()
 })
 
-test('a ledger write takes the folder lock in a process and gives it back', async ($, on) => {
+test('a ledger write takes the folder lock in a process and gives it back (the mkdir lock; the flock one is hooks/team/lock.test.sh)', async ($, on) => {
   const { runs } = engine(on, true)
   await start($)
   const before = runs.length

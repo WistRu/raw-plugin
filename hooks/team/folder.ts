@@ -82,9 +82,48 @@ done
 exit 0
 `
 
+// The lock proper, where `flock` exists (util-linux; every Linux): the
+// child process opens `<dir>/.flock` on its own descriptor 9, takes the
+// kernel's lock on it, says `held`, and becomes `sleep` by exec, so one
+// process, the stream's own child, holds the lock; ending the stream
+// kills it, which releases the lock. (`flock <file> <cmd>` would hold the
+// lock in a grandchild that outlives the kill.) A session that dies
+// releases it the same way, so there is no stale lock to take over.
+const HOLD_SH = `exec 9>"$1" || exit 1; flock -w "$2" 9 || exit 1; echo held; exec sleep 1000000`
+let flockKnown: boolean | undefined
+
+async function hasFlock($: EngineInterface): Promise<boolean> {
+  if (flockKnown === undefined) flockKnown = await $.process.run(['sh', '-c', 'command -v flock >/dev/null 2>&1'], { timeoutMs: 5000 }).then(r => r.exitCode === 0).catch(() => false)
+  return flockKnown
+}
+
 export async function withLock<T>($: EngineInterface, dir: string, fn: () => Promise<T>): Promise<T> {
-  const lock = `${dir}/.lock`
   await $.fs.write(`${dir}/.keep`, '')
+  if (!(await hasFlock($))) return withMkdirLock($, dir, fn)
+  const file = `${dir}/.flock`
+  const stream = $.process.spawn({ argv: ['sh', '-c', HOLD_SH, 'hold', file, String(LOCK_WAIT_MS / 1000)] })
+  let held = false
+  for (;;) {
+    const r = await stream.next()
+    if (r.done) break
+    if (r.value.stream === 'stdout' && r.value.text.includes('held')) {
+      held = true
+      break
+    }
+  }
+  if (!held) throw new Error(`${file} is held by another session; retry`)
+  try {
+    return await fn()
+  } finally {
+    await stream.return(undefined as never).catch(() => undefined)
+  }
+}
+
+// Without flock (not Linux): the mkdir lock with the stale takeover, which
+// keeps a narrow race (a fresh lock moved back over a newer one); the
+// shell test hooks/team/lock.test.sh exercises the flock path only.
+async function withMkdirLock<T>($: EngineInterface, dir: string, fn: () => Promise<T>): Promise<T> {
+  const lock = `${dir}/.lock`
   const got = await $.process.run(['sh', '-c', LOCK_SH, 'lock', lock, String(LOCK_WAIT_MS / 1000), String(LOCK_STALE_MS / 1000)], { timeoutMs: LOCK_WAIT_MS + 5000 })
   if (got.exitCode !== 0) throw new Error(`${lock} is held by another session; retry`)
   try {
