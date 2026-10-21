@@ -482,7 +482,7 @@ async function criticTool($: EngineInterface, m: Membership, input: Input): Prom
   const id = `R${at.replace(/\D/g, '').slice(2, 12)}-${m.role}`
   const run: CriticRun = { id, kind: 'artifact', subject: got.subject, role: m.role, task: taskId, mode, round: 1, startedAt: at, updatedAt: at, findings: merged.findings, notes: `${audit}\n\n${merged.notes}` }
   await saveRun($, m.team, run)
-  return `${renderRun(run)}\n\nAnswer each finding with answer (run ${id}); up to ${MAX_ROUNDS} rounds.${await recordOnTask($, m, run)}`
+  return `${renderRun(run)}\n\nAnswer each finding with critic_answer (run ${id}); up to ${MAX_ROUNDS} rounds.${await recordOnTask($, m, run)}`
 }
 
 async function answerTool($: EngineInterface, m: Membership, input: Input): Promise<string> {
@@ -500,7 +500,7 @@ async function answerTool($: EngineInterface, m: Membership, input: Input): Prom
   }
   if (run.round >= MAX_ROUNDS) return `Run ${id} has had its ${MAX_ROUNDS} rounds; what is still OPEN goes to the verifier or the user as it stands.`
   const answers = (Array.isArray(input.answers) ? (input.answers as Input[]) : []).map(a => ({ id: str(a.id), status: str(a.status), evidence: str(a.evidence) }))
-  if (answers.length === 0) return 'answer needs answers: [{ id: "F1", status: "fixed|refuted|user|cannot", evidence: "..." }], or a critic session\'s ledger pasted as `ledger`.'
+  if (answers.length === 0) return 'critic_answer needs answers: [{ id: "F1", status: "fixed|refuted|user|cannot", evidence: "..." }], or a critic session\'s ledger pasted as `ledger`.'
   for (const a of answers) {
     if (!run.findings.some(f => f.id === a.id)) return `No finding ${a.id} in run ${id}.`
     if (!['fixed', 'refuted', 'user', 'cannot'].includes(a.status)) return `${a.id}: status must be fixed, refuted, user or cannot.`
@@ -572,14 +572,14 @@ async function reviewTool($: EngineInterface, m: Membership, input: Input): Prom
     if (!address) return `The critic session could not be started (${'deny' in ran ? ran.deny : 'no session id in the answer'}); run the review without session: true for a subagent.`
     const run: CriticRun = { ...base, session: address, waiting: 'first-reply', subject: `${base.subject}; critic session ${address}` }
     await saveRun($, m.team, run)
-    return `Critic session ${address} started (run ${id}). Its first ledger arrives as a message from it and is recorded on the run; then answer each finding with answer (run ${id}), which sends your answers to it. The person can open that session and talk to the critic there.`
+    return `Critic session ${address} started (run ${id}). Its first ledger arrives as a message from it and is recorded on the run; then answer each finding with critic_answer (run ${id}), which sends your answers to it. The person can open that session and talk to the critic there.`
   }
   const reply = await askCritic($, m.team, prompt, `session review ${k}: ${m.role}`)
   const parsed = parseFindings(reply)
   const run: CriticRun = { ...base, findings: parsed.findings, notes: parsed.notes }
   await saveRun($, m.team, run)
   await $.fs.write(`${dir}/ledger-${run.id}.md`, renderRun(run) + '\n')
-  return `${renderRun(run)}\n\nAnswer each finding with answer (run ${run.id}); findings marked USER go to the person as they stand.${wantSession ? ' (No session could be started here, so a subagent read it.)' : ''}`
+  return `${renderRun(run)}\n\nAnswer each finding with critic_answer (run ${run.id}); findings marked USER go to the person as they stand.${wantSession ? ' (No session could be started here, so a subagent read it.)' : ''}`
 }
 
 // A critic session's message: its ledger lines become the run's findings
@@ -606,9 +606,9 @@ async function takeCriticMessage($: EngineInterface, m: Membership, text: string
 async function checklistTool($: EngineInterface, m: Membership, input: Input): Promise<string> {
   const path = `${m.team.dir}/CHECKLIST.md`
   const current = await $.fs.read(path).catch(() => '')
-  if (str(input.action) !== 'add') return current.trim() || 'The team checklist is empty: checklist add "<the mistake, the case>" after a finding settles as a real mistake.'
+  if (str(input.action) !== 'add') return current.trim() || 'The team checklist is empty: critic_checklist add "<the mistake, the case>" after a finding settles as a real mistake.'
   const line = str(input.line).trim()
-  if (!line) return 'checklist add needs the line: the mistake and the case it comes from.'
+  if (!line) return 'critic_checklist add needs the line: the mistake and the case it comes from.'
   const n = (current.match(/^\d+\./gm) ?? []).length + 1
   const text = `${current.trim() ? current.trimEnd() : '# Team checklist\n\nOne line per question, each born from a mistake this team made; the date and the case are why the line exists. Appended, never reworded.'}\n${n}. (${await stamp($)}, ${m.role}) ${line}\n`
   await $.fs.write(path, text)
@@ -621,7 +621,7 @@ async function predictTool($: EngineInterface, m: Membership, input: Input): Pro
   const action = str(input.action)
   if (action === 'add') {
     const text = str(input.text).trim()
-    if (!text) return 'predict add needs the text: what you expect before the run.'
+    if (!text) return 'critic_predict add needs the text: what you expect before the run.'
     const id = `P-${String(list.length + 1).padStart(4, '0')}`
     await writeJson($, path, [...list, { id, role: m.role, text, task: str(input.task) || undefined, at: await stamp($) }])
     return `${id} recorded: ${text}`
@@ -736,7 +736,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'audit',
+    name: 'critic_audit',
     description: 'The mechanical audit of a result against this session\'s record, no model: every figure must appear in a tool output, every quoted command must have been run, every file said written must exist, "tests pass" needs a passing run, "committed" needs git commit, and every "a + b = c" must add up.',
     inputSchema: {
       type: 'object',
@@ -744,7 +744,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'critic',
+    name: 'critic_result',
     description: 'A fresh-eyes read of a result by the critic subagent (Opus) before it goes to its verifier: the mechanical audit first, then claim cards, one figure reproduced, the checklist, the breaker. mode "heavy" adds a second critic for the logic (premises, rivals, scope). Findings carry ids and statuses; answer them with answer. With a task id the run is recorded on the task, and awaiting_verify needs it with no open blocking finding.',
     inputSchema: {
       type: 'object',
@@ -758,7 +758,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'answer',
+    name: 'critic_answer',
     description: 'One round of the debate on a critic run: answer each finding with evidence (fixed: what and where; refuted: the evidence; user: the person must decide; cannot: why), the critic re-checks and sets each status. Up to 3 rounds; an honest OPEN is a valid end.',
     inputSchema: {
       type: 'object',
@@ -774,17 +774,17 @@ const TOOLS = [
     },
   },
   {
-    name: 'review',
+    name: 'critic_session',
     description: 'The critic of this whole session: a digest of the transcript goes to a fresh critic (Opus) that maps the main claims of the user and the agent alike, verifies the key ones, looks for prior work, walks the checklist and names the breaker. Earlier reviews of this team are read first. Run at a milestone or before /team close.',
     inputSchema: { type: 'object', properties: { focus: { type: 'string', description: 'What to look at in particular' }, session: { type: 'boolean', description: 'Run the critic as a visible session of its own (Claude Desktop) that the person can read and talk to; its ledgers arrive as messages and the debate goes by message' } } },
   },
   {
-    name: 'checklist',
+    name: 'critic_checklist',
     description: 'The team\'s own checklist of mistakes: show it, or add one line after a finding settled as a real mistake (the mistake and the case). Every critic reads it. Appended, never reworded.',
     inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['show', 'add'] }, line: { type: 'string' } }, required: ['action'] },
   },
   {
-    name: 'predict',
+    name: 'critic_predict',
     description: 'Predictions: before a run, add what you expect; after it, resolve hit, miss or partial. The critics quote your score where you speak with certainty; the board shows it per role.',
     inputSchema: {
       type: 'object',
@@ -1195,7 +1195,7 @@ async function reviewCommand($: EngineInterface, argsText: string): Promise<{ te
 
 async function auditCommand($: EngineInterface, argsText: string): Promise<{ text: string }> {
   const subject = (argsText ?? '').trim()
-  if (!subject) return { text: 'Usage: /audit <path or text>' }
+  if (!subject) return { text: 'Usage: /critic-audit <path or text>' }
   const isPath = !subject.includes(' ') && (await $.fs.exists(subject).catch(() => false))
   const got = await subjectText($, isPath ? { path: subject } : { text: subject })
   if ('error' in got) return { text: `audit: ${got.error}` }
@@ -1229,8 +1229,8 @@ export async function startTeam($: EngineInterface): Promise<void> {
     $.command.register(spec).catch(err => $.ui.log(`${$.plugin.name}: /${spec.name} not registered: ${String(err)}`, { to: 'debug' }))
   await command({ name: 'team', description: 'A team of sessions for one task: /team <task> drafts it, "status" draws the board, "close" ends it', argumentHint: '<task> | status | close' })
   await command({ name: 'critic', description: 'A fresh-eyes critic of a result: the mechanical audit, then the critic subagent; --heavy adds the logic critic', argumentHint: '<path or claim> [--heavy] [--task T-NNNN]' })
-  await command({ name: 'session-review', description: 'The critic of this whole session; --session runs it as a visible session you can talk to', argumentHint: '[--session] [focus]' })
-  await command({ name: 'audit', description: 'The mechanical audit of a result against this session\'s record, no model', argumentHint: '<path or text>' })
+  await command({ name: 'critic-session', description: 'The critic of this whole session; --session runs it as a visible session you can talk to', argumentHint: '[--session] [focus]' })
+  await command({ name: 'critic-audit', description: 'The mechanical audit of a result against this session\'s record, no model', argumentHint: '<path or text>' })
   for (const tool of TOOLS) await $.tool.register(tool)
   // A different model from the author's, so the blind spots differ: Opus
   // for a session on anything else, Sonnet for a session on Opus (the
@@ -1239,7 +1239,7 @@ export async function startTeam($: EngineInterface): Promise<void> {
   criticModel = /opus/i.test(main) ? 'sonnet' : 'opus'
   await $.agent.register({
     name: CRITIC,
-    description: 'The team critic: a fresh reader of a result or a session. Spawned by mcp__rp__critic, answer and review, not by the model.',
+    description: 'The team critic: a fresh reader of a result or a session. Spawned by mcp__rp__critic_result, answer and review, not by the model.',
     prompt: CRITIC_SYSTEM,
     tools: ['Read', 'Grep', 'Glob', 'Bash'],
     model: criticModel,
@@ -1269,10 +1269,10 @@ export function registerTeam(on: On): void {
   // The critics as commands, in any session: the person's own way in.
   on('command.run', { command: 'critic' }, ($, e) => criticCommand($, e.args))
   on('command.run', { command: 'rp:critic' }, ($, e) => criticCommand($, e.args))
-  on('command.run', { command: 'session-review' }, ($, e) => reviewCommand($, e.args))
-  on('command.run', { command: 'rp:session-review' }, ($, e) => reviewCommand($, e.args))
-  on('command.run', { command: 'audit' }, ($, e) => auditCommand($, e.args))
-  on('command.run', { command: 'rp:audit' }, ($, e) => auditCommand($, e.args))
+  on('command.run', { command: 'critic-session' }, ($, e) => reviewCommand($, e.args))
+  on('command.run', { command: 'rp:critic-session' }, ($, e) => reviewCommand($, e.args))
+  on('command.run', { command: 'critic-audit' }, ($, e) => auditCommand($, e.args))
+  on('command.run', { command: 'rp:critic-audit' }, ($, e) => auditCommand($, e.args))
 
   // The critic is the tool's to spawn, never the model's.
   on('agent.offer', { agent: `rp:${CRITIC}` }, () => ({ isOffered: false }))
@@ -1320,14 +1320,14 @@ export function registerTeam(on: On): void {
       return 'text' in got ? got.text : handoffTool($, got.me, e as unknown as Input)
     }),
   )
-  on('tool.call', { tool: 'mcp__rp__critic' }, ($, e) =>
+  on('tool.call', { tool: 'mcp__rp__critic_result' }, ($, e) =>
     safely(async () => {
       const got = await teamOf($, e.agentId)
       const m = 'me' in got ? got.me : await soloMembership($)
       return criticTool($, m, e as unknown as Input)
     }),
   )
-  on('tool.call', { tool: 'mcp__rp__answer' }, ($, e) =>
+  on('tool.call', { tool: 'mcp__rp__critic_answer' }, ($, e) =>
     safely(async () => {
       const got = await teamOf($, e.agentId)
       const m = 'me' in got ? got.me : await soloMembership($)
@@ -1337,21 +1337,21 @@ export function registerTeam(on: On): void {
   // A review needs no team: outside one, the session reviews itself into
   // a folder of its own beside the teams; the critic, the debate, the
   // checklist and the predictions work there the same way.
-  on('tool.call', { tool: 'mcp__rp__review' }, ($, e) =>
+  on('tool.call', { tool: 'mcp__rp__critic_session' }, ($, e) =>
     safely(async () => {
       const got = await teamOf($, e.agentId)
       const m = 'me' in got ? got.me : await soloMembership($)
       return reviewTool($, m, e as unknown as Input)
     }),
   )
-  on('tool.call', { tool: 'mcp__rp__checklist' }, ($, e) =>
+  on('tool.call', { tool: 'mcp__rp__critic_checklist' }, ($, e) =>
     safely(async () => {
       const got = await teamOf($, e.agentId)
       const m = 'me' in got ? got.me : await soloMembership($)
       return checklistTool($, m, e as unknown as Input)
     }),
   )
-  on('tool.call', { tool: 'mcp__rp__predict' }, ($, e) =>
+  on('tool.call', { tool: 'mcp__rp__critic_predict' }, ($, e) =>
     safely(async () => {
       const got = await teamOf($, e.agentId)
       const m = 'me' in got ? got.me : await soloMembership($)
@@ -1360,7 +1360,7 @@ export function registerTeam(on: On): void {
   )
   // The audit works in any session: outside a team it reads the result
   // against this session's record all the same.
-  on('tool.call', { tool: 'mcp__rp__audit' }, ($, e) =>
+  on('tool.call', { tool: 'mcp__rp__critic_audit' }, ($, e) =>
     safely(async () => {
       const got = await subjectText($, e as unknown as Input)
       if ('error' in got) return `audit: ${got.error}`

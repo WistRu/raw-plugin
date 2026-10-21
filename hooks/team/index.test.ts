@@ -294,7 +294,7 @@ test('a critic session\'s verdict, received as a message or pasted, lands on the
   await start($)
   const verdict = '<cross-session-message from="local_critic" name="Critic #1">\nF1 [SETTLED-FIXED] BLOCKING AGENT -- fixed, I checked\nF2 [USER] NOTE USER -- for the person\nWhat changed: F1 closed.\n</cross-session-message>'
   // pasted by hand through the tool
-  const pasted = await $.tool.call({ tool: 'mcp__rp__answer', run: 'review-1-builder', ledger: verdict } as never)
+  const pasted = await $.tool.call({ tool: 'mcp__rp__critic_answer', run: 'review-1-builder', ledger: verdict } as never)
   expect(pasted.text).toMatch(/round 2/)
   expect(pasted.text).toMatch(/F1 \[SETTLED-FIXED\]/)
   expect(pasted.text).toMatch(/No blocking finding is open/)

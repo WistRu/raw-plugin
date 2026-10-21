@@ -3,4 +3,4 @@ description: The critic of this whole session, the user's reasoning included; --
 argument-hint: "[--session] [focus]"
 ---
 
-Run the slash command `/session-review` with the same arguments and show its output to the user word for word, nothing else.
+Run the slash command `/critic-session` with the same arguments and show its output to the user word for word, nothing else.
