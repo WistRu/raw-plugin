@@ -9,6 +9,10 @@ export type Evidence = {
   toolTexts: string[]
   // Every Bash command the session ran.
   commands: string[]
+  // Every path a Write, Edit, MultiEdit or NotebookEdit call named: where a
+  // relative path in the result may really be, when the session wrote
+  // outside its own directory.
+  writtenPaths?: string[]
 }
 
 export type Finding = { kind: 'figure' | 'command' | 'file' | 'tests' | 'commit' | 'arithmetic' | 'path'; severity: 'blocking' | 'note'; text: string }

@@ -62,8 +62,11 @@ let myAddress: string | undefined
 let poll: Timer | undefined
 let polling = false
 const misses = new Map<string, number>()
-// Critic runs waiting for their agent's turn.complete, by agent id.
-const pending = new Map<string, (answer: string) => void>()
+// Critic runs waiting for their agent's turn.complete: agent id -> the file
+// the answer is written to. A hook has 10 s of its own time per dispatch
+// and a `$` call's time is free, so the wait is a `$.process.run` that
+// watches for the file, never a promise of the module's own.
+const pending = new Map<string, string>()
 
 type Input = Record<string, unknown>
 const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback)
@@ -305,23 +308,35 @@ async function evidenceOf($: EngineInterface): Promise<Evidence> {
   const messages = await $.session.messages().catch(() => [] as DigestMessage[])
   const toolTexts: string[] = []
   const commands: string[] = []
+  const writtenPaths: string[] = []
   for (const m of messages) {
     for (const t of m.toolUses ?? []) {
       if (t.text) toolTexts.push(t.text)
       if (t.tool === 'Bash' && typeof t.input.command === 'string') commands.push(t.input.command)
+      const p = t.input.file_path ?? t.input.notebook_path
+      if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(t.tool) && typeof p === 'string') writtenPaths.push(p)
     }
   }
-  return { toolTexts, commands }
+  return { toolTexts, commands, writtenPaths }
 }
 
 // The file half of the audit: a file the result says it wrote exists and
-// is newer than the session's start.
-async function fileFindings($: EngineInterface, result: string): Promise<Finding[]> {
+// is newer than the session's start. A relative path that is not under the
+// session's directory is looked for among the paths the session wrote.
+async function fileFindings($: EngineInterface, result: string, evidence: Evidence): Promise<Finding[]> {
   const out: Finding[] = []
   const since = (await $.session.usage().catch(() => undefined))?.startedAt ?? 0
   for (const p of doneClaims(result).files.slice(0, 20)) {
-    const real = await placed($, p)
-    const st = real ? await $.fs.stat(real).catch(() => undefined) : undefined
+    let real = await placed($, p)
+    let st = real ? await $.fs.stat(real).catch(() => undefined) : undefined
+    if (!st && !p.startsWith('/')) {
+      const tail = `/${p.replace(/^\.\//, '')}`
+      const written = (evidence.writtenPaths ?? []).find(w => w.endsWith(tail))
+      if (written) {
+        real = written
+        st = await $.fs.stat(written).catch(() => undefined)
+      }
+    }
     if (!st) out.push({ kind: 'file', severity: 'blocking', text: `the result says ${p} was written, but it does not exist` })
     else if (st.kind === 'file' && since && st.mtimeMs < since) out.push({ kind: 'file', severity: 'note', text: `${p} is older than this session (${new Date(st.mtimeMs).toISOString()}): not written here` })
   }
@@ -330,7 +345,7 @@ async function fileFindings($: EngineInterface, result: string): Promise<Finding
 
 async function auditOf($: EngineInterface, result: string): Promise<string> {
   const evidence = await evidenceOf($)
-  return renderFindings(auditText(result, evidence), await fileFindings($, result))
+  return renderFindings(auditText(result, evidence), await fileFindings($, result, evidence))
 }
 
 async function subjectText($: EngineInterface, input: Input): Promise<{ subject: string; text: string } | { error: string }> {
@@ -392,19 +407,24 @@ async function allRuns($: EngineInterface, team: Team): Promise<CriticRun[]> {
 }
 
 // One critic: spawned as the plugin's agent type, answered by its
-// turn.complete; empty after CRITIC_WAIT_MS.
-async function askCritic($: EngineInterface, prompt: string, description: string): Promise<string> {
+// turn.complete into a file this call waits for; an error after
+// CRITIC_WAIT_MS.
+async function askCritic($: EngineInterface, team: Team, prompt: string, description: string): Promise<string> {
   const spawned = await $.agent.spawn({ prompt, subagentType: `${$.plugin.name}:${CRITIC}`, description: description.slice(0, 80) }).catch(err => ({ deny: String(err) }))
   if ('deny' in spawned && spawned.deny) throw new Error(`the critic could not start: ${spawned.deny}`)
   if (!('agentId' in spawned) || !spawned.agentId) throw new Error('the critic could not start: no agent id')
   const agentId = spawned.agentId
-  const text = await new Promise<string>(resolve => {
-    pending.set(agentId, resolve)
-    void $.clock.sleep(CRITIC_WAIT_MS).then(() => resolve('')).catch(() => resolve(''))
-  })
-  pending.delete(agentId)
-  if (!text) throw new Error(`the critic (agent ${agentId}) gave no answer within ${CRITIC_WAIT_MS / 60_000} minutes`)
-  return text
+  const file = `${runsDir(team)}/.reply-${agentId.replace(/[^A-Za-z0-9_-]/g, '')}`
+  pending.set(agentId, file)
+  try {
+    const waited = await $.process.run(['sh', '-c', `until [ -f "$1" ]; do sleep 2; done`, 'wait', file], { timeoutMs: CRITIC_WAIT_MS }).catch(() => undefined)
+    const text = waited ? await $.fs.read(file).catch(() => '') : ''
+    if (!text) throw new Error(`the critic (agent ${agentId}) gave no answer within ${CRITIC_WAIT_MS / 60_000} minutes`)
+    return text
+  } finally {
+    pending.delete(agentId)
+    await $.process.run(['rm', '-f', file], { timeoutMs: 5000 }).catch(() => undefined)
+  }
 }
 
 // The task's critic record follows the run: what it still holds open.
@@ -433,8 +453,8 @@ async function criticTool($: EngineInterface, m: Membership, input: Input): Prom
   const score = scoreText(predictionScore(predictions, m.role))
   const audit = await auditOf($, got.text)
   const head = [`Team "${m.team.slug}", role "${m.role}". The card: ${m.team.dir}/CARD.md.`, taskId ? `The result belongs to task ${taskId} of ${m.team.dir}/tasks.json.` : ''].filter(Boolean).join('\n')
-  const asks = [askCritic($, `${head}\n\n${factsPrompt({ subject: got.subject, purpose, audit, checklist, score, userLanguage: lang })}`, `facts critic: ${taskId || got.subject}`)]
-  if (mode === 'heavy') asks.push(askCritic($, `${head}\n\n${logicPrompt({ subject: got.subject, purpose, checklist, userLanguage: lang })}`, `logic critic: ${taskId || got.subject}`))
+  const asks = [askCritic($, m.team, `${head}\n\n${factsPrompt({ subject: got.subject, purpose, audit, checklist, score, userLanguage: lang })}`, `facts critic: ${taskId || got.subject}`)]
+  if (mode === 'heavy') asks.push(askCritic($, m.team, `${head}\n\n${logicPrompt({ subject: got.subject, purpose, checklist, userLanguage: lang })}`, `logic critic: ${taskId || got.subject}`))
   const replies = await Promise.all(asks)
   const merged = mergeReplies(replies)
   const id = `R${at.replace(/\D/g, '').slice(2, 12)}-${m.role}`
@@ -455,7 +475,7 @@ async function answerTool($: EngineInterface, m: Membership, input: Input): Prom
     if (!['fixed', 'refuted', 'user', 'cannot'].includes(a.status)) return `${a.id}: status must be fixed, refuted, user or cannot.`
   }
   const withAnswers: CriticRun = { ...run, findings: run.findings.map(f => ({ ...f, answer: answers.find(a => a.id === f.id)?.evidence ?? f.answer })) }
-  const reply = await askCritic($, debatePrompt(withAnswers, answers, await userLanguage($)), `critic round ${run.round + 1}: ${run.subject}`)
+  const reply = await askCritic($, m.team, debatePrompt(withAnswers, answers, await userLanguage($)), `critic round ${run.round + 1}: ${run.subject}`)
   const next = { ...applyVerdicts(withAnswers, reply), updatedAt: await stamp($) }
   await saveRun($, m.team, next)
   if (next.kind === 'review') await $.fs.write(`${m.team.dir}/review/ledger-${next.id}.md`, renderRun(next) + '\n')
@@ -475,7 +495,7 @@ async function reviewTool($: EngineInterface, m: Membership, input: Input): Prom
   const log = await $.process.run(['git', 'log', '--oneline', '-15'], { cwd, timeoutMs: 10_000 }).catch(() => undefined)
   const git = status && status.exitCode === 0 ? `status:\n${status.stdout.trim() || '(clean)'}\nlog:\n${log?.stdout.trim() ?? ''}` : ''
   const at = await stamp($)
-  const reply = await askCritic($, reviewPrompt({ digestPath, cwd, git, focus: str(input.focus), checklist: await checklistText($, m.team), priorLedgers: prior, userLanguage: await userLanguage($) }), `session review ${k}: ${m.role}`)
+  const reply = await askCritic($, m.team, reviewPrompt({ digestPath, cwd, git, focus: str(input.focus), checklist: await checklistText($, m.team), priorLedgers: prior, userLanguage: await userLanguage($) }), `session review ${k}: ${m.role}`)
   const parsed = parseFindings(reply)
   const run: CriticRun = { id: `review-${k}-${m.role}`, kind: 'review', subject: `session of ${m.role}, digest ${digestPath}`, role: m.role, mode: 'light', round: 1, startedAt: at, updatedAt: at, findings: parsed.findings, notes: parsed.notes }
   await saveRun($, m.team, run)
@@ -682,6 +702,17 @@ const TOOLS = [
     },
   },
 ]
+
+// A session of no team, for the tools that work without one: its own
+// folder `_sessions/<id>` beside the teams, no roles, itself the lead.
+async function soloMembership($: EngineInterface): Promise<Membership> {
+  const id = await $.session.id()
+  const dir = `${await teamsDir($)}/_sessions/${id}`
+  return {
+    role: 'lead',
+    team: { slug: `session-${id.slice(0, 8)}`, goal: 'this session alone', dir, root: await $.session.root(), lead: id, roles: [], rules: [...RULES], created: await stamp($) },
+  }
+}
 
 async function teamOf($: EngineInterface): Promise<{ me: Membership } | { text: string }> {
   const m = await who($)
@@ -1105,10 +1136,13 @@ export function registerTeam(on: On): void {
       return 'text' in got ? got.text : answerTool($, got.me, e as unknown as Input)
     }),
   )
+  // A review needs no team: outside one, the session reviews itself into
+  // a folder of its own beside the teams.
   on('tool.call', { tool: 'mcp__rp__team_review' }, ($, e) =>
     safely(async () => {
       const got = await teamOf($)
-      return 'text' in got ? got.text : reviewTool($, got.me, e as unknown as Input)
+      const m = 'me' in got ? got.me : await soloMembership($)
+      return reviewTool($, m, e as unknown as Input)
     }),
   )
   on('tool.call', { tool: 'mcp__rp__team_checklist' }, ($, e) =>
@@ -1180,7 +1214,8 @@ export function registerTeam(on: On): void {
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     if (e.agentId !== undefined) {
-      pending.get(e.agentId)?.(e.answer)
+      const file = pending.get(e.agentId)
+      if (file) await $.fs.write(file, e.answer || '(the critic answered nothing)').catch(err => $.ui.log(`${$.plugin.name}: the critic's answer could not be kept: ${String(err)}`))
       return done
     }
     const m = await who($)
