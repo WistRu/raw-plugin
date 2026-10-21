@@ -1168,17 +1168,20 @@ export function registerTeam(on: On): void {
   on('tool.call', { tool: 'mcp__rp__team_critic' }, ($, e) =>
     safely(async () => {
       const got = await teamOf($, e.agentId)
-      return 'text' in got ? got.text : criticTool($, got.me, e as unknown as Input)
+      const m = 'me' in got ? got.me : await soloMembership($)
+      return criticTool($, m, e as unknown as Input)
     }),
   )
   on('tool.call', { tool: 'mcp__rp__team_answer' }, ($, e) =>
     safely(async () => {
       const got = await teamOf($, e.agentId)
-      return 'text' in got ? got.text : answerTool($, got.me, e as unknown as Input)
+      const m = 'me' in got ? got.me : await soloMembership($)
+      return answerTool($, m, e as unknown as Input)
     }),
   )
   // A review needs no team: outside one, the session reviews itself into
-  // a folder of its own beside the teams.
+  // a folder of its own beside the teams; the critic, the debate, the
+  // checklist and the predictions work there the same way.
   on('tool.call', { tool: 'mcp__rp__team_review' }, ($, e) =>
     safely(async () => {
       const got = await teamOf($, e.agentId)
@@ -1189,13 +1192,15 @@ export function registerTeam(on: On): void {
   on('tool.call', { tool: 'mcp__rp__team_checklist' }, ($, e) =>
     safely(async () => {
       const got = await teamOf($, e.agentId)
-      return 'text' in got ? got.text : checklistTool($, got.me, e as unknown as Input)
+      const m = 'me' in got ? got.me : await soloMembership($)
+      return checklistTool($, m, e as unknown as Input)
     }),
   )
   on('tool.call', { tool: 'mcp__rp__team_predict' }, ($, e) =>
     safely(async () => {
       const got = await teamOf($, e.agentId)
-      return 'text' in got ? got.text : predictTool($, got.me, e as unknown as Input)
+      const m = 'me' in got ? got.me : await soloMembership($)
+      return predictTool($, m, e as unknown as Input)
     }),
   )
   // The audit works in any session: outside a team it reads the result
