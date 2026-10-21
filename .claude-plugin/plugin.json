@@ -1,0 +1,6 @@
+{
+  "name": "raw-plugin",
+  "version": "0.2.0",
+  "description": "The operator's own harness for Claude Code: a resource guard that measures the machine, holds heavy commands without headroom and runs them inside a memory slice; more modules to come.",
+  "author": { "name": "wist" }
+}

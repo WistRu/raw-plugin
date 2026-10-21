@@ -1,0 +1,5 @@
+{
+  "name": "raw",
+  "owner": { "name": "wist" },
+  "plugins": [{ "name": "raw-plugin", "source": "./" }]
+}
