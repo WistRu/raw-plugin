@@ -17,12 +17,19 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, PromptComposeSection, SessionSendAddress, Timer } from 'claude-code'
 
 import type { TeamView } from '../../types'
+import type { Evidence, Finding } from './audit'
+import { auditText, doneClaims, renderFindings } from './audit'
 import { writeTargets } from './bashzone'
 import type { Role, Team } from './card'
 import { BRIEF_MARK, RULES, brief, cardText, leadSection, memberSection, slugify } from './card'
+import type { CriticRun, DigestMessage, Prediction } from './critic'
+import {
+  CRITIC_SYSTEM, MAX_ROUNDS, applyVerdicts, debatePrompt, digest, factsPrompt, logicPrompt, mergeReplies, metrics, metricsLine, openBlocking,
+  parseFindings, predictionScore, renderRun, reviewPrompt, scoreText,
+} from './critic'
 import type { Membership } from './folder'
 import {
-  ackEvent, appendInbox, bindSession, inboxDir, layOut, listTeams, membership, noteFile, queueBlock, readLedger, readTeam, replaceQueue,
+  ackEvent, appendInbox, bindSession, inboxDir, layOut, listTeams, membership, noteFile, queueBlock, readJson, readLedger, readTeam, replaceQueue,
   stateFile, teamsDir, unbindSession, unreadEvents, updateLedger, updateTeam, writeEvent, writeJson,
 } from './folder'
 import type { Ledger, SetArgs, Status, Wake } from './ledger'
@@ -85,7 +92,7 @@ async function bindAs($: EngineInterface, dir: string, role: string): Promise<Me
   )
   await bindSession($, id, { dir, role })
   me = { team, role }
-  meAt = await $.clock.now()
+  meAt = Date.now()
   if (role === 'lead') armPoll($, team)
   return me
 }
@@ -115,8 +122,11 @@ async function rejoinByAddress($: EngineInterface): Promise<Membership | undefin
   return undefined
 }
 
+// The cache's clock is the module's own (Date.now), not `$.clock.now`: a
+// hook on every tool call must not cost a dispatch, and the engine's clock
+// is for stamps.
 async function who($: EngineInterface): Promise<Membership | undefined> {
-  const now = await $.clock.now()
+  const now = Date.now()
   if (rebind) {
     me = await carryOver($)
     meAt = now
@@ -290,49 +300,227 @@ async function startRoles($: EngineInterface, team: Team, ledger: Ledger, names:
 
 // ---- The critic ---------------------------------------------------------------
 
-const CRITIC_PROMPT = [
-  'You are the critic of a team: a fresh reader of one result before it goes to its verifier. You change nothing and you add nothing to the result; you read it and say what would make a careful reader refuse it.',
-  'Walk this list and answer each line in writing, shortly:',
-  '1. Every figure in the result names where it comes from (a file, a command, a run) and can be reproduced; name any that cannot.',
-  '2. What the claim would look like if it were false, and whether the result shows that was checked.',
-  '3. What is stated as a fact but is a guess, an estimate, or unverified; name each.',
-  '4. One check you reproduced yourself, read-only (a file read, a count, a grep), and whether it agreed.',
-  '5. What the result leaves out that the verifier will ask about.',
-  'Answer in three blocks: BLOCKING (what must change before the verifier reads it), NOTES (worth fixing, not blocking), QUESTIONS (what you could not settle). One line each. Say "BLOCKING: none" when nothing blocks.',
-  'Use only read-only commands in Bash (cat, grep, ls, wc, sha256sum, git log, git diff).',
-].join('\n')
+// The record of this session, as the mechanical audit reads it.
+async function evidenceOf($: EngineInterface): Promise<Evidence> {
+  const messages = await $.session.messages().catch(() => [] as DigestMessage[])
+  const toolTexts: string[] = []
+  const commands: string[] = []
+  for (const m of messages) {
+    for (const t of m.toolUses ?? []) {
+      if (t.text) toolTexts.push(t.text)
+      if (t.tool === 'Bash' && typeof t.input.command === 'string') commands.push(t.input.command)
+    }
+  }
+  return { toolTexts, commands }
+}
 
-async function criticTool($: EngineInterface, m: Membership, input: Input): Promise<string> {
+// The file half of the audit: a file the result says it wrote exists and
+// is newer than the session's start.
+async function fileFindings($: EngineInterface, result: string): Promise<Finding[]> {
+  const out: Finding[] = []
+  const since = (await $.session.usage().catch(() => undefined))?.startedAt ?? 0
+  for (const p of doneClaims(result).files.slice(0, 20)) {
+    const real = await placed($, p)
+    const st = real ? await $.fs.stat(real).catch(() => undefined) : undefined
+    if (!st) out.push({ kind: 'file', severity: 'blocking', text: `the result says ${p} was written, but it does not exist` })
+    else if (st.kind === 'file' && since && st.mtimeMs < since) out.push({ kind: 'file', severity: 'note', text: `${p} is older than this session (${new Date(st.mtimeMs).toISOString()}): not written here` })
+  }
+  return out
+}
+
+async function auditOf($: EngineInterface, result: string): Promise<string> {
+  const evidence = await evidenceOf($)
+  return renderFindings(auditText(result, evidence), await fileFindings($, result))
+}
+
+async function subjectText($: EngineInterface, input: Input): Promise<{ subject: string; text: string } | { error: string }> {
   const path = str(input.path)
-  const claim = str(input.claim)
-  const taskId = str(input.task)
-  if (!path && !claim) return 'team_critic needs a path (the result to read) or a claim (the sentence to check), or both.'
-  const prompt = [
-    `Team "${m.team.slug}", role "${m.role}". ${path ? `The result is at ${path}.` : ''} ${claim ? `The claim: ${claim}` : ''}`,
-    taskId ? `It is the result of task ${taskId} in ${m.team.dir}/tasks.json.` : '',
-    `The team's card is ${m.team.dir}/CARD.md.`,
-  ].filter(Boolean).join('\n')
-  const spawned = await $.agent.spawn({ prompt, subagentType: `${$.plugin.name}:${CRITIC}`, description: `critic: ${taskId || path || claim}`.slice(0, 80) })
-  if ('deny' in spawned && spawned.deny) return `The critic could not start: ${spawned.deny}`
-  if (!('agentId' in spawned) || !spawned.agentId) return 'The critic could not start: no agent id.'
+  const claim = str(input.claim) || str(input.text)
+  if (!path && !claim) return { error: 'name a path (the result to read) or a claim/text (the sentence to check), or both.' }
+  let text = claim
+  if (path) {
+    const read = await $.fs.read(path).catch(() => undefined)
+    if (read === undefined) return { error: `cannot read ${path}` }
+    text = claim ? `${read}\n\n${claim}` : read
+  }
+  return { subject: path ? (claim ? `${path} and the claim "${claim}"` : path) : `the claim "${claim}"`, text }
+}
+
+// The language the user wrote in last, for the critics' replies.
+async function userLanguage($: EngineInterface): Promise<string> {
+  const messages = await $.session.messages().catch(() => [] as DigestMessage[])
+  const last = [...messages].reverse().find(m => m.role === 'user' && m.text.trim())
+  return last && /[А-Яа-яЁё]/.test(last.text) ? 'Russian' : 'English'
+}
+
+// The team's own checklist and the project's, when they exist.
+async function checklistText($: EngineInterface, team: Team): Promise<string> {
+  const parts: string[] = []
+  const own = await $.fs.read(`${team.dir}/CHECKLIST.md`).catch(() => '')
+  if (own.trim()) parts.push(own.trim())
+  for (const p of [`${team.root}/.claude/critic-checklist.md`, `${team.root}/docs/agents/critic-checklist.md`]) {
+    const t = await $.fs.read(p).catch(() => '')
+    if (t.trim()) {
+      parts.push(`Project checklist ${p}:\n${t.slice(0, 12_000)}`)
+      break
+    }
+  }
+  return parts.join('\n\n')
+}
+
+const runsDir = (team: Team) => `${team.dir}/critic`
+const runFile = (team: Team, id: string) => `${runsDir(team)}/${id}.json`
+
+async function readRun($: EngineInterface, team: Team, id: string): Promise<CriticRun | undefined> {
+  return readJson<CriticRun | undefined>($, runFile(team, id), undefined).catch(() => undefined)
+}
+
+async function saveRun($: EngineInterface, team: Team, run: CriticRun): Promise<void> {
+  await writeJson($, runFile(team, run.id), run)
+  await $.fs.write(`${runsDir(team)}/${run.id}.md`, renderRun(run) + '\n')
+}
+
+async function allRuns($: EngineInterface, team: Team): Promise<CriticRun[]> {
+  const entries = await $.fs.list(runsDir(team)).catch(() => [])
+  const runs: CriticRun[] = []
+  for (const e of entries) {
+    if (e.kind !== 'file' || !e.name.endsWith('.json')) continue
+    const r = await readRun($, team, e.name.slice(0, -5))
+    if (r) runs.push(r)
+  }
+  return runs.sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+}
+
+// One critic: spawned as the plugin's agent type, answered by its
+// turn.complete; empty after CRITIC_WAIT_MS.
+async function askCritic($: EngineInterface, prompt: string, description: string): Promise<string> {
+  const spawned = await $.agent.spawn({ prompt, subagentType: `${$.plugin.name}:${CRITIC}`, description: description.slice(0, 80) }).catch(err => ({ deny: String(err) }))
+  if ('deny' in spawned && spawned.deny) throw new Error(`the critic could not start: ${spawned.deny}`)
+  if (!('agentId' in spawned) || !spawned.agentId) throw new Error('the critic could not start: no agent id')
   const agentId = spawned.agentId
   const text = await new Promise<string>(resolve => {
     pending.set(agentId, resolve)
     void $.clock.sleep(CRITIC_WAIT_MS).then(() => resolve('')).catch(() => resolve(''))
   })
   pending.delete(agentId)
-  if (!text) return `The critic (agent ${agentId}) gave no answer within ${CRITIC_WAIT_MS / 60_000} minutes.`
-  const summary = (text.match(/BLOCKING:[^\n]*/)?.[0] ?? text.split('\n')[0] ?? '').slice(0, 200)
-  if (taskId) {
-    const at = await stamp($)
-    const set = await updateLedger($, m.team.dir, ledger => {
-      const r = setTask(ledger, { id: taskId, critic: { at, summary } }, at, m.role)
-      return 'error' in r ? { ledger, out: r.error } : { ledger: r.ledger, out: undefined }
-    })
-    if (set) return `${text}\n\n(critic not recorded on ${taskId}: ${set})`
-    return `${text}\n\n(recorded on ${taskId}: ${summary})`
-  }
+  if (!text) throw new Error(`the critic (agent ${agentId}) gave no answer within ${CRITIC_WAIT_MS / 60_000} minutes`)
   return text
+}
+
+// The task's critic record follows the run: what it still holds open.
+async function recordOnTask($: EngineInterface, m: Membership, run: CriticRun): Promise<string> {
+  if (!run.task) return ''
+  const at = await stamp($)
+  const open = openBlocking(run)
+  const summary = `${run.findings.length} finding(s), ${open} open blocking, round ${run.round}`
+  const err = await updateLedger($, m.team.dir, ledger => {
+    const r = setTask(ledger, { id: run.task ?? '', critic: { at, summary, run: run.id, openBlocking: open } }, at, m.role)
+    return 'error' in r ? { ledger, out: r.error } : { ledger: r.ledger, out: undefined }
+  })
+  return err ? `\n\n(not recorded on ${run.task}: ${err})` : `\n\n(recorded on ${run.task}: ${summary})`
+}
+
+async function criticTool($: EngineInterface, m: Membership, input: Input): Promise<string> {
+  const got = await subjectText($, input)
+  if ('error' in got) return `team_critic: ${got.error}`
+  const mode: CriticRun['mode'] = str(input.mode) === 'heavy' ? 'heavy' : 'light'
+  const purpose = str(input.purpose) || 'a result of the team'
+  const taskId = str(input.task) || undefined
+  const at = await stamp($)
+  const lang = await userLanguage($)
+  const checklist = await checklistText($, m.team)
+  const predictions = await readJson<Prediction[]>($, `${m.team.dir}/predictions.json`, []).catch(() => [] as Prediction[])
+  const score = scoreText(predictionScore(predictions, m.role))
+  const audit = await auditOf($, got.text)
+  const head = [`Team "${m.team.slug}", role "${m.role}". The card: ${m.team.dir}/CARD.md.`, taskId ? `The result belongs to task ${taskId} of ${m.team.dir}/tasks.json.` : ''].filter(Boolean).join('\n')
+  const asks = [askCritic($, `${head}\n\n${factsPrompt({ subject: got.subject, purpose, audit, checklist, score, userLanguage: lang })}`, `facts critic: ${taskId || got.subject}`)]
+  if (mode === 'heavy') asks.push(askCritic($, `${head}\n\n${logicPrompt({ subject: got.subject, purpose, checklist, userLanguage: lang })}`, `logic critic: ${taskId || got.subject}`))
+  const replies = await Promise.all(asks)
+  const merged = mergeReplies(replies)
+  const id = `R${at.replace(/\D/g, '').slice(2, 12)}-${m.role}`
+  const run: CriticRun = { id, kind: 'artifact', subject: got.subject, role: m.role, task: taskId, mode, round: 1, startedAt: at, updatedAt: at, findings: merged.findings, notes: `${audit}\n\n${merged.notes}` }
+  await saveRun($, m.team, run)
+  return `${renderRun(run)}\n\nAnswer each finding with team_answer (run ${id}); up to ${MAX_ROUNDS} rounds.${await recordOnTask($, m, run)}`
+}
+
+async function answerTool($: EngineInterface, m: Membership, input: Input): Promise<string> {
+  const id = str(input.run)
+  const run = id ? await readRun($, m.team, id) : undefined
+  if (!run) return `No critic run "${id}" in this team (${runsDir(m.team)}).`
+  if (run.round >= MAX_ROUNDS) return `Run ${id} has had its ${MAX_ROUNDS} rounds; what is still OPEN goes to the verifier or the user as it stands.`
+  const answers = (Array.isArray(input.answers) ? (input.answers as Input[]) : []).map(a => ({ id: str(a.id), status: str(a.status), evidence: str(a.evidence) }))
+  if (answers.length === 0) return 'team_answer needs answers: [{ id: "F1", status: "fixed|refuted|user|cannot", evidence: "..." }].'
+  for (const a of answers) {
+    if (!run.findings.some(f => f.id === a.id)) return `No finding ${a.id} in run ${id}.`
+    if (!['fixed', 'refuted', 'user', 'cannot'].includes(a.status)) return `${a.id}: status must be fixed, refuted, user or cannot.`
+  }
+  const withAnswers: CriticRun = { ...run, findings: run.findings.map(f => ({ ...f, answer: answers.find(a => a.id === f.id)?.evidence ?? f.answer })) }
+  const reply = await askCritic($, debatePrompt(withAnswers, answers, await userLanguage($)), `critic round ${run.round + 1}: ${run.subject}`)
+  const next = { ...applyVerdicts(withAnswers, reply), updatedAt: await stamp($) }
+  await saveRun($, m.team, next)
+  if (next.kind === 'review') await $.fs.write(`${m.team.dir}/review/ledger-${next.id}.md`, renderRun(next) + '\n')
+  const open = openBlocking(next)
+  return `${renderRun(next)}\n\n${open === 0 ? 'No blocking finding is open.' : `${open} blocking finding(s) still open${next.round >= MAX_ROUNDS ? '; the rounds are spent' : `; ${MAX_ROUNDS - next.round} round(s) left`}.`}${await recordOnTask($, m, next)}`
+}
+
+async function reviewTool($: EngineInterface, m: Membership, input: Input): Promise<string> {
+  const dir = `${m.team.dir}/review`
+  const prior = (await $.fs.list(dir).catch(() => [])).filter(e => e.kind === 'file' && /^ledger-.*\.md$/.test(e.name)).map(e => `${dir}/${e.name}`).sort()
+  const k = (await $.fs.list(dir).catch(() => [])).filter(e => e.kind === 'file' && /^digest-\d+\.md$/.test(e.name)).reduce((n, e) => Math.max(n, Number(e.name.match(/\d+/)?.[0] ?? 0)), 0) + 1
+  const messages = await $.session.messages().catch(() => [] as DigestMessage[])
+  const digestPath = `${dir}/digest-${k}.md`
+  await $.fs.write(digestPath, digest(messages) + '\n')
+  const cwd = await $.session.cwd()
+  const status = await $.process.run(['git', 'status', '--short'], { cwd, timeoutMs: 10_000 }).catch(() => undefined)
+  const log = await $.process.run(['git', 'log', '--oneline', '-15'], { cwd, timeoutMs: 10_000 }).catch(() => undefined)
+  const git = status && status.exitCode === 0 ? `status:\n${status.stdout.trim() || '(clean)'}\nlog:\n${log?.stdout.trim() ?? ''}` : ''
+  const at = await stamp($)
+  const reply = await askCritic($, reviewPrompt({ digestPath, cwd, git, focus: str(input.focus), checklist: await checklistText($, m.team), priorLedgers: prior, userLanguage: await userLanguage($) }), `session review ${k}: ${m.role}`)
+  const parsed = parseFindings(reply)
+  const run: CriticRun = { id: `review-${k}-${m.role}`, kind: 'review', subject: `session of ${m.role}, digest ${digestPath}`, role: m.role, mode: 'light', round: 1, startedAt: at, updatedAt: at, findings: parsed.findings, notes: parsed.notes }
+  await saveRun($, m.team, run)
+  await $.fs.write(`${dir}/ledger-${run.id}.md`, renderRun(run) + '\n')
+  return `${renderRun(run)}\n\nAnswer each finding with team_answer (run ${run.id}); findings marked USER go to the person as they stand.`
+}
+
+async function checklistTool($: EngineInterface, m: Membership, input: Input): Promise<string> {
+  const path = `${m.team.dir}/CHECKLIST.md`
+  const current = await $.fs.read(path).catch(() => '')
+  if (str(input.action) !== 'add') return current.trim() || 'The team checklist is empty: team_checklist add "<the mistake, the case>" after a finding settles as a real mistake.'
+  const line = str(input.line).trim()
+  if (!line) return 'team_checklist add needs the line: the mistake and the case it comes from.'
+  const n = (current.match(/^\d+\./gm) ?? []).length + 1
+  const text = `${current.trim() ? current.trimEnd() : '# Team checklist\n\nOne line per question, each born from a mistake this team made; the date and the case are why the line exists. Appended, never reworded.'}\n${n}. (${await stamp($)}, ${m.role}) ${line}\n`
+  await $.fs.write(path, text)
+  return `Checklist line ${n} added.`
+}
+
+async function predictTool($: EngineInterface, m: Membership, input: Input): Promise<string> {
+  const path = `${m.team.dir}/predictions.json`
+  const list = await readJson<Prediction[]>($, path, [])
+  const action = str(input.action)
+  if (action === 'add') {
+    const text = str(input.text).trim()
+    if (!text) return 'team_predict add needs the text: what you expect before the run.'
+    const id = `P-${String(list.length + 1).padStart(4, '0')}`
+    await writeJson($, path, [...list, { id, role: m.role, text, task: str(input.task) || undefined, at: await stamp($) }])
+    return `${id} recorded: ${text}`
+  }
+  if (action === 'resolve') {
+    const id = str(input.id)
+    const outcome = str(input.outcome) as Prediction['outcome']
+    const p = list.find(x => x.id === id)
+    if (!p) return `No prediction ${id}.`
+    if (!outcome || !['hit', 'miss', 'partial'].includes(outcome)) return 'outcome must be hit, miss or partial.'
+    await writeJson($, path, list.map(x => (x.id === id ? { ...x, outcome, note: str(input.note) || x.note } : x)))
+    return `${id} ${outcome}: ${p.text}`
+  }
+  const roles = [...new Set(list.map(p => p.role))].sort()
+  const open = list.filter(p => !p.outcome)
+  return [
+    ...roles.map(r => `${r}: ${scoreText(predictionScore(list, r))}`),
+    ...(open.length ? ['', 'unresolved:', ...open.map(p => `- ${p.id} ${p.role}: ${p.text}`)] : []),
+  ].join('\n') || 'No predictions yet.'
 }
 
 // ---- Tools ------------------------------------------------------------------
@@ -422,15 +610,63 @@ const TOOLS = [
     },
   },
   {
+    name: 'team_audit',
+    description: 'The mechanical audit of a result against this session\'s record, no model: every figure must appear in a tool output, every quoted command must have been run, every file said written must exist, "tests pass" needs a passing run, "committed" needs git commit, and every "a + b = c" must add up.',
+    inputSchema: {
+      type: 'object',
+      properties: { path: { type: 'string', description: 'The result to audit (a file)' }, text: { type: 'string', description: 'Or the text itself' } },
+    },
+  },
+  {
     name: 'team_critic',
-    description: 'A fresh-eyes read of a result by the critic subagent before it goes to its verifier: blocking findings, notes, questions. With a task id the read is recorded on the task, which awaiting_verify requires.',
+    description: 'A fresh-eyes read of a result by the critic subagent (Opus) before it goes to its verifier: the mechanical audit first, then claim cards, one figure reproduced, the checklist, the breaker. mode "heavy" adds a second critic for the logic (premises, rivals, scope). Findings carry ids and statuses; answer them with team_answer. With a task id the run is recorded on the task, and awaiting_verify needs it with no open blocking finding.',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'The result to read (a file)' },
         claim: { type: 'string', description: 'The sentence to check' },
         task: { type: 'string', description: 'The task the result belongs to, T-NNNN' },
+        mode: { type: 'string', enum: ['light', 'heavy'], description: 'heavy: facts and logic critics both; for a figure or conclusion that reaches the lead or the person' },
+        purpose: { type: 'string', description: 'What the result is for: a message, a commit, a handoff' },
       },
+    },
+  },
+  {
+    name: 'team_answer',
+    description: 'One round of the debate on a critic run: answer each finding with evidence (fixed: what and where; refuted: the evidence; user: the person must decide; cannot: why), the critic re-checks and sets each status. Up to 3 rounds; an honest OPEN is a valid end.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        run: { type: 'string', description: 'The run id from team_critic or team_review' },
+        answers: {
+          type: 'array',
+          items: { type: 'object', properties: { id: { type: 'string' }, status: { type: 'string', enum: ['fixed', 'refuted', 'user', 'cannot'] }, evidence: { type: 'string' } }, required: ['id', 'status', 'evidence'] },
+        },
+      },
+      required: ['run', 'answers'],
+    },
+  },
+  {
+    name: 'team_review',
+    description: 'The critic of this whole session: a digest of the transcript goes to a fresh critic (Opus) that maps the main claims of the user and the agent alike, verifies the key ones, looks for prior work, walks the checklist and names the breaker. Earlier reviews of this team are read first. Run at a milestone or before /team close.',
+    inputSchema: { type: 'object', properties: { focus: { type: 'string', description: 'What to look at in particular' } } },
+  },
+  {
+    name: 'team_checklist',
+    description: 'The team\'s own checklist of mistakes: show it, or add one line after a finding settled as a real mistake (the mistake and the case). Every critic reads it. Appended, never reworded.',
+    inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['show', 'add'] }, line: { type: 'string' } }, required: ['action'] },
+  },
+  {
+    name: 'team_predict',
+    description: 'Predictions: before a run, add what you expect; after it, resolve hit, miss or partial. The critics quote your score where you speak with certainty; the board shows it per role.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['add', 'resolve', 'score'] },
+        text: { type: 'string' }, task: { type: 'string' }, id: { type: 'string' },
+        outcome: { type: 'string', enum: ['hit', 'miss', 'partial'] }, note: { type: 'string' },
+      },
+      required: ['action'],
     },
   },
   {
@@ -497,7 +733,7 @@ async function createTeam($: EngineInterface, input: Input): Promise<string> {
   await writeJson($, `${dir}/tasks.json`, ledger)
   await bindSession($, id, { dir, role: 'lead' })
   me = { team, role: 'lead' }
-  meAt = await $.clock.now()
+  meAt = Date.now()
   const started = await startRoles($, team, ledger, roles.map(r => r.name))
   const fresh = (await readTeam($, dir)) ?? team
   me = { team: fresh, role: 'lead' }
@@ -568,7 +804,15 @@ async function taskTool($: EngineInterface, m: Membership, input: Input): Promis
     const ledger = await readLedger($, team.dir)
     const states = (await roleStates($, team)).map(r =>
       `- ${r.name}: ${r.isStarted ? (r.isBound ? 'started, bound' : 'started, not yet bound') : 'not started'}${r.isParked ? ', parked' : ''}${r.lastAt ? `; last turn ${r.lastAt}` : ''}${r.context !== undefined ? `; context ${r.context} %` : ''}${r.answer ? `; said: ${r.answer}` : ''}`)
-    return [board(ledger, at), '', '## Roles', ...states].join('\n')
+    const runs = await allRuns($, team)
+    const predictions = await readJson<Prediction[]>($, `${team.dir}/predictions.json`, []).catch(() => [] as Prediction[])
+    const errors = metrics(runs).map(x => `- ${metricsLine(x)}`)
+    const scores = [...new Set(predictions.map(p => p.role))].sort().map(r => `- ${r}: ${scoreText(predictionScore(predictions, r))}`)
+    return [
+      board(ledger, at), '', '## Roles', ...states,
+      ...(errors.length ? ['', '## Errors found by the critics', ...errors] : []),
+      ...(scores.length ? ['', '## Predictions', ...scores] : []),
+    ].join('\n')
   }
   if (action === 'list') {
     const ledger = await readLedger($, team.dir)
@@ -778,8 +1022,8 @@ export async function startTeam($: EngineInterface): Promise<void> {
   for (const tool of TOOLS) await $.tool.register(tool)
   await $.agent.register({
     name: CRITIC,
-    description: 'The team critic: a fresh reader of one result before its verifier sees it. Spawned by mcp__rp__team_critic, not by the model.',
-    prompt: CRITIC_PROMPT,
+    description: 'The team critic: a fresh reader of a result or a session. Spawned by mcp__rp__team_critic, team_answer and team_review, not by the model.',
+    prompt: CRITIC_SYSTEM,
     tools: ['Read', 'Grep', 'Glob', 'Bash'],
     model: 'opus',
   }).catch(err => $.ui.log(`${$.plugin.name}: the critic agent could not be registered: ${String(err)}`, { to: 'debug' }))
@@ -853,6 +1097,39 @@ export function registerTeam(on: On): void {
     safely(async () => {
       const got = await teamOf($)
       return 'text' in got ? got.text : criticTool($, got.me, e as unknown as Input)
+    }),
+  )
+  on('tool.call', { tool: 'mcp__rp__team_answer' }, ($, e) =>
+    safely(async () => {
+      const got = await teamOf($)
+      return 'text' in got ? got.text : answerTool($, got.me, e as unknown as Input)
+    }),
+  )
+  on('tool.call', { tool: 'mcp__rp__team_review' }, ($, e) =>
+    safely(async () => {
+      const got = await teamOf($)
+      return 'text' in got ? got.text : reviewTool($, got.me, e as unknown as Input)
+    }),
+  )
+  on('tool.call', { tool: 'mcp__rp__team_checklist' }, ($, e) =>
+    safely(async () => {
+      const got = await teamOf($)
+      return 'text' in got ? got.text : checklistTool($, got.me, e as unknown as Input)
+    }),
+  )
+  on('tool.call', { tool: 'mcp__rp__team_predict' }, ($, e) =>
+    safely(async () => {
+      const got = await teamOf($)
+      return 'text' in got ? got.text : predictTool($, got.me, e as unknown as Input)
+    }),
+  )
+  // The audit works in any session: outside a team it reads the result
+  // against this session's record all the same.
+  on('tool.call', { tool: 'mcp__rp__team_audit' }, ($, e) =>
+    safely(async () => {
+      const got = await subjectText($, e as unknown as Input)
+      if ('error' in got) return `team_audit: ${got.error}`
+      return auditOf($, got.text)
     }),
   )
   on('tool.call', { tool: 'mcp__rp__team_role' }, ($, e) =>

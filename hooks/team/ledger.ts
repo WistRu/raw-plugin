@@ -20,8 +20,9 @@ export type Task = {
   created: string
   updated: string
   note?: string
-  // The critic's last read of the task's result, owed before awaiting_verify.
-  critic?: { at: string; summary: string }
+  // The critic's last read of the task's result, owed before awaiting_verify;
+  // `run` names the critic run, `openBlocking` what it still holds open.
+  critic?: { at: string; summary: string; run?: string; openBlocking?: number }
   history: HistoryRow[]
 }
 
@@ -101,7 +102,7 @@ export type SetArgs = {
   depends_on?: string[]
   verifier?: string | null
   owner?: string
-  critic?: { at: string; summary: string }
+  critic?: { at: string; summary: string; run?: string; openBlocking?: number }
   force?: boolean
 }
 
@@ -126,8 +127,10 @@ export function setTask(ledger: Ledger, args: SetArgs, at: string, by: string): 
     if (open.length > 0) return { error: `${args.id} still waits on ${open.join(', ')}; pass force to close it anyway` }
   }
   const critic = args.critic ?? before.critic
-  if (args.status === 'awaiting_verify' && before.verifier && !critic && !args.force)
-    return { error: `${args.id} goes to ${before.verifier} only after the critic has read it (team_critic with task ${args.id}); pass force to skip, saying why in the note` }
+  if (args.status === 'awaiting_verify' && before.verifier && !args.force) {
+    if (!critic) return { error: `${args.id} goes to ${before.verifier} only after the critic has read it (team_critic with task ${args.id}); pass force to skip, saying why in the note` }
+    if ((critic.openBlocking ?? 0) > 0) return { error: `${args.id} still has ${critic.openBlocking} open blocking finding(s) in critic run ${critic.run ?? '?'}: answer them with team_answer first; pass force to skip, saying why in the note` }
+  }
   const wasReady = new Set(ledger.tasks.filter(t => t.status === 'ready').map(t => t.id))
   const updated: Task = {
     ...before,

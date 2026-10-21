@@ -125,7 +125,8 @@ export function memberSection(team: Team, role: Role): string {
     `Team folder: ${team.dir} (card CARD.md, ledger tasks.json, your note handoff/${role.name}.md).`,
     'Rules:',
     ...team.rules.map((r, i) => `${i + 1}. ${r}`),
-    'Tools: mcp__rp__team_task (the ledger; action "queue" shows your note\'s queue block, "board" the whole team), mcp__rp__team_notify (message a role or "lead"), mcp__rp__team_handoff (write your queue block), mcp__rp__team_critic (a fresh-eyes read of a result, run before awaiting_verify; the ledger refuses awaiting_verify on a verified task without it).',
+    'Tools: mcp__rp__team_task (the ledger; action "queue" shows your note\'s queue block, "board" the whole team), mcp__rp__team_notify (message a role or "lead"), mcp__rp__team_handoff (write your queue block).',
+    'Before a result leaves you: mcp__rp__team_audit (the mechanical check of figures, commands, files, tests and sums against the record), then mcp__rp__team_critic with the task id (mode "heavy" for a figure or conclusion that reaches the lead or the person), then mcp__rp__team_answer for each finding with evidence; awaiting_verify is refused while a blocking finding is open. mcp__rp__team_predict before and after every run whose outcome you will report; mcp__rp__team_checklist add when a finding settles as a real mistake.',
     'At the start of a turn that begins new work, read your queue (team_task queue). Before a long wait and after every finished item call team_handoff.',
   ].join('\n')
 }
@@ -136,7 +137,7 @@ export function leadSection(team: Team): string {
     `Goal: ${team.goal}. Team folder: ${team.dir}.`,
     `Roles: ${team.roles.map(r => r.name).join(', ')}.`,
     'You own priorities, the ledger and the operator\'s decisions (at most two options, a recommendation first). You start nothing a role owns; you message the role.',
-    'Tools: mcp__rp__team_task (action "board" draws the board with each role\'s state), mcp__rp__team_notify, mcp__rp__team_role (park, wake, add or start a role), mcp__rp__team_critic; /team status draws the board for the person, /team close ends the team.',
+    'Tools: mcp__rp__team_task (action "board" draws the board with each role\'s state, the errors the critics found and the prediction scores), mcp__rp__team_notify, mcp__rp__team_role (park, wake, add or start a role), mcp__rp__team_critic and team_answer for your own results, mcp__rp__team_review at a milestone and before /team close (the critic of this whole session, the person\'s reasoning included; its USER findings go to the person as they stand); /team status draws the board for the person, /team close ends the team.',
     'Only verified figures reach the operator; anything else is marked "unverified".',
   ].join('\n')
 }

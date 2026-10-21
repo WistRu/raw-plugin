@@ -95,11 +95,37 @@ folder.
   their paths; `git stash`/`reset`/`checkout`/`clean` and `git add -A` as the
   whole tree) and refused the same way; quotes are stripped, not parsed, so
   the reading is conservative.
-- **The critic** (`mcp__rp__team_critic`, the subagent `rp:critic` on Opus):
-  a fresh reader of one result before its verifier sees it, answering
-  BLOCKING / NOTES / QUESTIONS; with a task id the read is recorded on the
-  task, and a task with a verifier is not sent to `awaiting_verify` without
-  it (`force` skips, saying why).
+- **The critics**, four layers that drive the error rate down:
+  1. `mcp__rp__team_audit`, no model: every figure in a result must appear
+     in a tool output of the session, every quoted command must have been
+     run, every file said written must exist and be newer than the session,
+     "tests pass" needs a passing run, "committed" needs `git commit`, and
+     every `a + b = c` or `x of y = p %` is recomputed (`hooks/team/audit.ts`).
+  2. `mcp__rp__team_critic`, the subagent `rp:critic` on Opus with read-only
+     tools: the audit's lines, claim cards (claim, source, reproduced,
+     falsifier), one figure reproduced, a twelve-line checklist plus the
+     team's own, the breaker. `mode: heavy` adds a second critic for the
+     logic (premises, rivals, scope). Findings are lines
+     `F<n> [status] BLOCKING|NOTE|QUESTION USER|AGENT -- text`, kept as a
+     run under `critic/`.
+  3. `mcp__rp__team_answer`: the debate. The author answers each finding
+     with evidence (fixed, refuted, user, cannot); the critic re-checks and
+     sets `SETTLED-FIXED`, `SETTLED-WRONG`, `USER` or `OPEN`; three rounds at
+     most, an honest `OPEN` is a valid end. With a task id the run is
+     recorded on the task, and `awaiting_verify` is refused while a blocking
+     finding is open (`force` skips, saying why).
+  4. `mcp__rp__team_review`: the critic of the whole session, from a digest
+     of the transcript (`review/digest-<k>.md`): the main claims of the user
+     and the agent alike, the key ones verified, prior work, the checklist,
+     the breaker; earlier reviews are read first and their ledgers carried
+     over. Its `USER` findings go to the person as they stand.
+  What the team learns: `mcp__rp__team_checklist add` appends one dated line
+  per settled mistake (`CHECKLIST.md`, read by every critic, never
+  reworded); `mcp__rp__team_predict` records what a role expects before a
+  run and resolves it after, and the critics quote the score where the role
+  speaks with certainty. The board (`team_task board`, `/team status`) shows
+  per role the blocking findings found, fixed, refuted and open, and the
+  prediction score.
 - **The roster** (`mcp__rp__team_role`, the lead's): park a role (its messages
   wait in its inbox), wake it, add a role, or start (or restart) a role's
   session. `/team close` tells every member, and a member's binding ends.
