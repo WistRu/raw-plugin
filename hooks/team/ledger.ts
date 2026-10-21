@@ -127,9 +127,13 @@ export function setTask(ledger: Ledger, args: SetArgs, at: string, by: string): 
     if (open.length > 0) return { error: `${args.id} still waits on ${open.join(', ')}; pass force to close it anyway` }
   }
   const critic = args.critic ?? before.critic
-  if (args.status === 'awaiting_verify' && before.verifier && !args.force) {
-    if (!critic) return { error: `${args.id} goes to ${before.verifier} only after the critic has read it (critic with task ${args.id}); pass force to skip, saying why in the note` }
-    if ((critic.openBlocking ?? 0) > 0) return { error: `${args.id} still has ${critic.openBlocking} open blocking finding(s) in critic run ${critic.run ?? '?'}: answer them with answer first; pass force to skip, saying why in the note` }
+  // A result leaves its author only after the critic read it: to the
+  // verifier (awaiting_verify) or, with no verifier, straight to done.
+  const leaving = (args.status === 'awaiting_verify' && before.verifier) || (args.status === 'done' && before.status !== 'awaiting_verify')
+  if (leaving && !args.force) {
+    const where = args.status === 'done' ? 'is marked done' : `goes to ${before.verifier}`
+    if (!critic) return { error: `${args.id} ${where} only after the critic has read it (critic_result with task ${args.id}); pass force to skip, saying why in the note` }
+    if ((critic.openBlocking ?? 0) > 0) return { error: `${args.id} still has ${critic.openBlocking} open blocking finding(s) in critic run ${critic.run ?? '?'}: answer them with critic_answer first; pass force to skip, saying why in the note` }
   }
   const wasReady = new Set(ledger.tasks.filter(t => t.status === 'ready').map(t => t.id))
   const updated: Task = {
@@ -165,6 +169,24 @@ export function setTask(ledger: Ledger, args: SetArgs, at: string, by: string): 
 }
 
 export const openTasks = (ledger: Ledger): Task[] => ledger.tasks.filter(t => isOpen(t.status))
+
+// The stamp of a note's queue heading, `## Queue (2026-10-21T16:42Z; ...)`,
+// as milliseconds; undefined when the note has none.
+export function queueStampMs(note: string): number | undefined {
+  const m = note.match(/^## Queue \((\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z)/m)
+  const ms = m ? Date.parse(m[1] ?? '') : NaN
+  return Number.isNaN(ms) ? undefined : ms
+}
+
+// What a role is told at its next prompt when its turn ended with work in
+// hand and no note written since the turn began: the rule it skipped.
+export function handoffReminder(ledger: Ledger, note: string, role: string, turnStartedMs: number): string | undefined {
+  const mine = ledger.tasks.filter(t => t.owner === role && t.status === 'in_progress')
+  if (mine.length === 0) return undefined
+  const stamp = queueStampMs(note)
+  if (stamp !== undefined && stamp >= turnStartedMs) return undefined
+  return `Reminder from the plugin: your last turn ended with ${mine.map(t => t.id).join(', ')} in progress and no handoff note written since it began (rule 5, no idle role). Write the queue block now with mcp__rp__team_handoff: what runs, what waits on whom, the next step; then go on.`
+}
 
 // The board as text, one section per owner, open tasks only.
 export function board(ledger: Ledger, at: string): string {

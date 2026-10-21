@@ -4,7 +4,7 @@ import { writeTargets } from './bashzone'
 import { BRIEF_MARK, RULES, brief, cardText, slugify } from './card'
 import type { Team } from './card'
 import { queueBlock, replaceQueue } from './folder'
-import { addTask, board, checkDeps, emptyLedger, setTask } from './ledger'
+import { addTask, board, checkDeps, emptyLedger, handoffReminder, queueStampMs, setTask } from './ledger'
 
 const AT = '2026-10-21T13:00Z'
 const DIR = '/p/.claude/teams/demo'
@@ -65,6 +65,31 @@ test('the ledger computes blocked and ready, and done wakes the dependents', asy
   const text = board(failed.ledger, AT)
   expect(text).toMatch(/1 open task/)
   expect(text).toMatch(/T-0003 \*\*blocked\*\* more -- waits on T-0002/)
+})
+
+test('done needs the critic on any task; a turn ending with work in hand and a stale note is reminded', async () => {
+  let l = emptyLedger()
+  l = add(l, { title: 'solo', owner: 'x' }, AT, 'lead').ledger
+  const early = setTask(l, { id: 'T-0001', status: 'done' }, AT, 'x')
+  expect('error' in early && early.error).toMatch(/is marked done only after the critic has read it/)
+  const forced = setTask(l, { id: 'T-0001', status: 'done', force: true, note: 'trivial' }, AT, 'x')
+  expect('error' in forced).toBe(false)
+  const read = setTask(l, { id: 'T-0001', critic: { at: AT, summary: 'ok', openBlocking: 0 } }, AT, 'x')
+  if ('error' in read) throw new Error(read.error)
+  expect('error' in setTask(read.ledger, { id: 'T-0001', status: 'done' }, AT, 'x')).toBe(false)
+
+  let w = emptyLedger()
+  w = add(w, { title: 'work', owner: 'builder' }, AT, 'lead').ledger
+  const busy = setTask(w, { id: 'T-0001', status: 'in_progress' }, AT, 'builder')
+  if ('error' in busy) throw new Error(busy.error)
+  const turnStart = Date.parse('2026-10-21T16:00Z')
+  const oldNote = '# builder -- handoff\n\n## Queue (2026-10-21T15:00Z; nothing running)\n\n- a\n'
+  const freshNote = '# builder -- handoff\n\n## Queue (2026-10-21T16:30Z; T-0001 running)\n\n- a\n'
+  expect(queueStampMs(oldNote)).toBe(Date.parse('2026-10-21T15:00Z'))
+  expect(handoffReminder(busy.ledger, oldNote, 'builder', turnStart)).toMatch(/T-0001 in progress and no handoff note/)
+  expect(handoffReminder(busy.ledger, '', 'builder', turnStart)).toMatch(/no handoff note/)
+  expect(handoffReminder(busy.ledger, freshNote, 'builder', turnStart)).toBeUndefined()
+  expect(handoffReminder(busy.ledger, oldNote, 'checker', turnStart)).toBeUndefined()
 })
 
 test('a dependency must exist and may not close a ring', async () => {

@@ -33,7 +33,7 @@ import {
   replaceQueue, stateFile, teamsDir, unbindSession, unreadEvents, updateLedger, updateTeam, writeEvent, writeJson,
 } from './folder'
 import type { Ledger, SetArgs, Status, Wake } from './ledger'
-import { addTask, board, setTask } from './ledger'
+import { addTask, board, handoffReminder, setTask } from './ledger'
 
 const PANE = 'team'
 // How often the lead's session looks into the inboxes for events nobody
@@ -71,6 +71,9 @@ const pending = new Map<string, string>()
 const critics = new Set<string>()
 // The critic's model, set at start from the session's: never the same.
 let criticModel = 'opus'
+// What the last turn left unsaid (a task in hand, no note): read once by
+// the next prompt.
+let reminder: string | undefined
 
 type Input = Record<string, unknown>
 const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback)
@@ -1329,6 +1332,12 @@ export function registerTeam(on: On): void {
         err => $.ui.log(`${$.plugin.name}: could not bind to team ${slug} as ${role}: ${String(err)}; the model may call team_join`),
       )
     }
+    // the reminder left by the last turn rides beside this prompt, once
+    if (reminder && !e.isMeta) {
+      const text = reminder
+      reminder = undefined
+      return next({ ...e, context: [...(e.context ?? []), text] })
+    }
     return next(e)
   })
 
@@ -1478,6 +1487,12 @@ export function registerTeam(on: On): void {
       at: await stamp($), reason: e.reason, context: usage?.context.percent, answer: e.answer.replace(/\s+/g, ' ').slice(0, 200),
     }, null, 2) + '\n').catch(() => undefined)
     if (m.role === 'lead') await refreshView($, m.team).catch(() => undefined)
+    else {
+      // work in hand and no note since the turn began: the next prompt says so
+      const ledger = await readLedger($, m.team.dir).catch(() => undefined)
+      const note = await $.fs.read(noteFile(m.team.dir, m.role)).catch(() => '')
+      if (ledger) reminder = handoffReminder(ledger, note, m.role, (await $.clock.now()) - e.durationMs)
+    }
     return done
   })
 
