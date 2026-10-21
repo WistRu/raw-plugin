@@ -223,6 +223,27 @@ the landing.
   place does (a commit, an edit), and a changed section is re-sent uncached
   on the next request after it, so it costs a cache write of the
   conversation once per turn in which it changed.
+- **The landing** (`/land`, or the tool `mcp__rp__land`): from the session
+  that works in the worktree. Each step refuses with its reason and nothing
+  after it runs: the worktree is clean (`git status --porcelain` empty); the
+  main tree has the main branch checked out and no change to a tracked file
+  (untracked files there are left alone, the guard allows them); the branch
+  contains the main branch (`git merge-base --is-ancestor <main> HEAD`, else
+  "rebase first": the module never rebases); the branch has commits to land;
+  `preLand` passes; `git merge --ff-only <branch>` in the main tree; then
+  `postLand` (its failure is reported, the landing stands); the session
+  leaves the worktree through the engine's `ExitWorktree` with `keep`; `git
+  worktree remove <path>` and `git branch -d <branch>`, never `--force`; the
+  report lists the landed commits. A session that cannot leave its worktree
+  (a folder the desktop app made for it, or a subagent's call) lands and
+  keeps the worktree, which `/worktree prune` removes later. Every git call
+  goes through `$.process.run` by argument vector, no shell; `preLand` and
+  `postLand` written as one string run under `sh -c`, as a list by argument
+  vector, ten minutes at most, outside the resource guard's slice.
+- **Repository hooks do not fire from `/land`**: the engine runs git with
+  the repository's hooks off, so a project's `post-merge` or
+  `post-checkout` hook is skipped by the landing. `postLand` is the place for
+  what such a hook did.
 - **`.claude/rp-worktree.json`** in the main tree, optional, three keys and
   no others: `code` (path prefixes that alone count as code; everything
   else is free), `preLand` and `postLand` (below). A file that does not

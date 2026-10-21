@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { writeTargets } from '../team/bashzone'
 import { refusal } from './guard'
+import { land } from './land'
 import type { Writes } from './guard'
 import type { Host, Ran } from './repo'
 import { parseConfig, placeOf, readRepo } from './repo'
@@ -173,4 +174,79 @@ test('the section: the rule in three lines and where the session stands', async 
   const inTree = sectionText(repo, await placeOf(host, repo, '/r/.claude/worktrees/feat/src'), true, 'Prune: something')
   expect(inTree.split('\n')[3]).toBe('Here: worktree /r/.claude/worktrees/feat, branch feat, 2 commits not on main, dirty.')
   expect(inTree.split('\n')[4]).toBe('Prune: something')
+})
+
+const WT = '/r/.claude/worktrees/feat'
+const happy = (): Record<string, Ran | ((n: number) => Ran)> => ({
+  [`${WT}: git status --porcelain`]: ran(''),
+  '/r: git symbolic-ref --quiet --short HEAD': ran('main\n'),
+  '/r: git status --porcelain --untracked-files=no': ran(''),
+  [`${WT}: git merge-base --is-ancestor main HEAD`]: ran(''),
+  [`${WT}: git log --format=%h %s main..HEAD`]: ran('abc1 add x\nabc2 fix y\n'),
+  [`${WT}: sh -c make test`]: ran('ok'),
+  '/r: git rev-parse --short main': n => ran(n === 1 ? 'a000\n' : 'abc1\n'),
+  '/r: git merge --ff-only feat': ran('Fast-forward'),
+  '/r: sh -c ./post.sh': ran(''),
+  [`/r: git worktree remove ${WT}`]: ran(''),
+  '/r: git branch -d feat': ran('Deleted branch feat'),
+})
+const CONFIGURED = { '/r/.claude/rp-worktree.json': JSON.stringify({ preLand: 'make test', postLand: './post.sh' }) }
+
+test('the landing refuses at each step in order, and merges nothing before the last check', async () => {
+  // each step's bad answer; the n-th case keeps the steps before it good
+  const bad: [string, Ran, RegExp][] = [
+    [`${WT}: git status --porcelain`, ran(' M src/a.ts\n'), /the worktree \/r\/.claude\/worktrees\/feat has uncommitted changes/],
+    ['/r: git symbolic-ref --quiet --short HEAD', ran('feat-2\n'), /the main tree \/r has feat-2 checked out, not main/],
+    ['/r: git status --porcelain --untracked-files=no', ran(' M Makefile\n'), /the main tree \/r has uncommitted changes to tracked files/],
+    [`${WT}: git merge-base --is-ancestor main HEAD`, ran('', 1), /rebase first: feat does not contain main/],
+    [`${WT}: git log --format=%h %s main..HEAD`, ran(''), /feat has no commit that is not on main; nothing to land/],
+    [`${WT}: sh -c make test`, ran('', 2, 'test failed: x'), /preLand exited 2 in .*nothing was merged:\ntest failed: x/],
+    ['/r: git merge --ff-only feat', ran('', 128, 'fatal: Not possible to fast-forward'), /git merge --ff-only feat failed in \/r; nothing was merged/],
+  ]
+  for (let i = 0; i < bad.length; i++) {
+    const answers = happy()
+    for (const [key, answer] of bad.slice(i)) answers[key] = answer
+    const host = fake({ ...REPO, files: CONFIGURED, answers })
+    const repo = await readRepo(host, '/r')
+    if (!repo) throw new Error('no repo')
+    const text = await land(host, repo, `${WT}/src`, { leave: async () => true })
+    expect(text).toMatch(/^Not landed: /)
+    expect(text).toMatch(bad[i]?.[2] ?? /never/)
+    // nothing past the refusing step ran: no merge but the refused one, no removal
+    expect(host.calls.filter(c => c.includes('merge --ff-only')).length).toBe(i === bad.length - 1 ? 1 : 0)
+    expect(host.calls.some(c => c.includes('worktree remove') || c.includes('branch -d'))).toBe(false)
+  }
+})
+
+test('the landing reports the commits, runs the hooks, and removes the worktree and branch', async () => {
+  const host = fake({ ...REPO, files: CONFIGURED, answers: happy() })
+  const repo = await readRepo(host, '/r')
+  if (!repo) throw new Error('no repo')
+  const text = await land(host, repo, WT, { leave: async () => true })
+  expect(text.split('\n')).toEqual([
+    'Landed 2 commits of feat on main in /r (a000..abc1):',
+    '- abc1 add x',
+    '- abc2 fix y',
+    'preLand passed.',
+    'postLand passed.',
+    `Removed the worktree ${WT} and deleted the branch feat.`,
+  ])
+  // the order of the work: preLand before the merge, postLand after it, never --force
+  const order = host.calls.filter(c => /sh -c|merge --ff-only|worktree remove|branch -d/.test(c))
+  expect(order).toEqual([`${WT}: sh -c make test`, '/r: git merge --ff-only feat', '/r: sh -c ./post.sh', `/r: git worktree remove ${WT}`, '/r: git branch -d feat'])
+  expect(host.calls.some(c => c.includes('--force') || c.includes('branch -D') || c.includes('rebase'))).toBe(false)
+})
+
+test('the landing keeps the worktree when the session cannot leave it, and refuses outside a worktree', async () => {
+  const host = fake({ ...REPO, answers: happy() })
+  const repo = await readRepo(host, '/r')
+  if (!repo) throw new Error('no repo')
+  const kept = await land(host, repo, WT, { leave: async () => false })
+  expect(kept).toMatch(/^Landed 2 commits/)
+  expect(kept).toMatch(/are kept: this session runs in that folder/)
+  expect(host.calls.some(c => c.includes('worktree remove'))).toBe(false)
+  expect(await land(host, repo, '/r/src', { leave: async () => true })).toMatch(/runs in the main tree of \/r, not in a worktree/)
+  const broken = await readRepo(fake({ ...REPO, files: { '/r/.claude/rp-worktree.json': '{"gate": 1}' } }), '/r')
+  if (!broken) throw new Error('no repo')
+  expect(await land(host, broken, WT, { leave: async () => true })).toMatch(/rp-worktree\.json does not parse \(unknown key/)
 })

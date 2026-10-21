@@ -14,6 +14,7 @@ import type { EngineInterface, On, PromptComposeSection } from 'claude-code'
 import { writeTargets } from '../team/bashzone'
 import type { Writes } from './guard'
 import { refusal } from './guard'
+import { land } from './land'
 import type { Host, Repo } from './repo'
 import { placeOf, readRepo } from './repo'
 import { sectionText } from './section'
@@ -106,6 +107,33 @@ function failOpen($: EngineInterface, err: unknown): void {
   failedOnce = true
 }
 
+const answer = (text: string) => ({ result: text, text })
+
+// The landing of the worktree this loop runs in. The session leaves the
+// worktree first through the engine's own ExitWorktree (keep), so its folder
+// is never pulled from under it; a subagent's call never moves the session.
+async function landHere($: EngineInterface, agentId?: string): Promise<string> {
+  const repo = await repoOf($)
+  if (!repo) return 'Not landed: not in a git repository with a main branch (origin/HEAD, main or master).'
+  const host = hostOf($)
+  const cwd = await $.session.cwd()
+  const cwdReal = (await host.real(cwd)) ?? cwd
+  const leave = async (path: string) => {
+    if (!(cwdReal === path || cwdReal.startsWith(`${path}/`))) return true
+    if (agentId !== undefined) return false
+    const ran = await $.tool.call({ tool: 'ExitWorktree', action: 'keep' }).catch(() => undefined)
+    if (!ran || 'deny' in ran && ran.deny || ran.isError) return false
+    const now = (await host.real(await $.session.cwd())) ?? ''
+    return !(now === path || now.startsWith(`${path}/`))
+  }
+  try {
+    return await land(host, repo, cwdReal, { leave })
+  } finally {
+    forget()
+    await computeSection($).catch(() => undefined)
+  }
+}
+
 async function worktreeCommand($: EngineInterface, args: string): Promise<{ text: string }> {
   const word = (args ?? '').trim().split(/\s+/)[0] ?? ''
   if (word === 'off' || word === 'on') {
@@ -146,11 +174,21 @@ export async function startWorktree($: EngineInterface): Promise<void> {
   await computeSection($).catch(err => $.ui.log(`${$.plugin.name}: the worktree section could not be computed: ${String(err)}`, { to: 'debug' }))
   await $.command.register({ name: 'worktree', description: 'The worktree guard: "off" lifts it for this session, "on" restores it', argumentHint: 'on | off' })
     .catch(err => $.ui.log(`${$.plugin.name}: /worktree not registered: ${String(err)}`, { to: 'debug' }))
+  await $.command.register({ name: 'land', description: 'Land this worktree: fast-forward it onto the main branch, then remove the worktree and its branch' })
+    .catch(err => $.ui.log(`${$.plugin.name}: /land not registered: ${String(err)}`, { to: 'debug' }))
+  await $.tool.register({
+    name: 'land',
+    description: 'Land the worktree this session works in: refuses unless the worktree is clean, the main tree has the main branch checked out and is clean, and the branch contains the main branch (rebase first otherwise); runs preLand, merges with --ff-only, runs postLand, removes the worktree and deletes the branch, and reports the landed commits.',
+    inputSchema: { type: 'object', properties: {} },
+  })
 }
 
 export function registerWorktree(on: On): void {
   on('command.run', { command: 'worktree' }, ($, e) => worktreeCommand($, e.args))
   on('command.run', { command: 'rp:worktree' }, ($, e) => worktreeCommand($, e.args))
+  on('command.run', { command: 'land' }, async $ => ({ text: await landHere($).catch(err => `Not landed: ${String(err)}`) }))
+  on('command.run', { command: 'rp:land' }, async $ => ({ text: await landHere($).catch(err => `Not landed: ${String(err)}`) }))
+  on('tool.call', { tool: 'mcp__rp__land' }, async ($, e) => answer(await landHere($, e.agentId).catch(err => `Not landed: ${String(err)}`)))
 
   // MultiEdit is matched by name: this build ships no such tool, an older one may
   on('tool.call', { tool: /^(Edit|Write|MultiEdit)$/ }, async ($, e, next) => {
