@@ -1,4 +1,4 @@
-# Raw Plugin
+# Raw Plugin (`rp`)
 
 The operator's own harness for Claude Code: the behaviour that should follow
 them to any machine, project and session, as one plugin. Each module is a
@@ -29,9 +29,9 @@ Claude Code knows what the machine can carry and never overloads it.
   apps are never touched. A kill (exit 137) is explained to the model.
 - **Elsewhere** (macOS, Windows, Linux without systemd): a watchdog stops the
   newest own job when available RAM falls under 1 GB, so the desktop survives.
-- **Tool and command**: `mcp__raw-plugin__resources` for the model (call it
-  before sizing a batch) and `/resources` for the person; `/resources setup`
-  shows how to make Linux swap Mac-like (`hooks/resource-guard/setup-swap.sh`:
+- **Tool and commands**: `mcp__rp__resources` for the model (call it
+  before sizing a batch); `/rp:resources` (or `/resources`) for the person;
+  `/rp:setup` (or `/resources setup`) shows how to make Linux swap Mac-like (`hooks/resource-guard/setup-swap.sh`:
   zram first, disk files on demand; hinted once per machine).
 - Thresholds are constants at the top of `hooks/resource-guard/index.ts`.
 
@@ -42,12 +42,12 @@ them on; inside the slice `cd` does not carry over to the next command.
 ## Install
 
 ```
-/plugin install raw-plugin --marketplace WistRu/raw-plugin
+/plugin install rp --marketplace WistRu/raw-plugin
 ```
 
 Answer `y` to add the marketplace, then pick the user scope. From a local
 checkout: `claude plugin marketplace add /path/to/raw-plugin` and
-`claude plugin install raw-plugin@raw --scope user`.
+`claude plugin install rp@raw --scope user`.
 
 ## Develop
 

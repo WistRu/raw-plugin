@@ -1,5 +1,6 @@
 {
   "name": "raw",
   "owner": { "name": "wist" },
-  "plugins": [{ "name": "raw-plugin", "source": "./" }]
+  "description": "Raw Plugin: the operator's own harness for Claude Code",
+  "plugins": [{ "name": "rp", "source": "./" }]
 }

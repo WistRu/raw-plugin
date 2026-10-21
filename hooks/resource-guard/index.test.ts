@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 const GB = 1024 ** 3
-const TOOL = 'mcp__raw-plugin__resources'
+const TOOL = 'mcp__rp__resources'
 
 type Fake = { mem_avail?: number; cpu?: number; systemd?: number; swap_dynamic?: number; tmp?: string }
 
@@ -201,8 +201,8 @@ test('the resources tool and command report the snapshot; setup hints once per m
   expect(setup.text).toMatch(/sudo .*setup-swap\.sh/)
 
   // The prefixed commands (commands/*.md) are answered by the hooks too.
-  const prefixed = await $.command.run({ command: 'raw-plugin:resources', args: '' })
+  const prefixed = await $.command.run({ command: 'rp:resources', args: '' })
   expect(prefixed.text).toMatch(/CPU busy 1\.0\/6 cores/)
-  const prefixedSetup = await $.command.run({ command: 'raw-plugin:setup', args: '' })
+  const prefixedSetup = await $.command.run({ command: 'rp:setup', args: '' })
   expect(prefixedSetup.text).toMatch(/sudo .*setup-swap\.sh/)
 })

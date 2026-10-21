@@ -323,7 +323,7 @@ export function registerResourceGuard(on: On, _options: PluginOptions): void {
     }
   }).catch(($, e, next) => (next.called ? next(e) : next({ ...e, command: stripOldWrapper(e.command) })))
 
-  on('tool.call', { tool: 'mcp__raw-plugin__resources' }, async $ => {
+  on('tool.call', { tool: 'mcp__rp__resources' }, async $ => {
     const p = await probe($)
     const why = shortage(p, 0)
     const text = `${snapshot(p)}. ${why ? `No headroom for a heavy command: ${why}.` : `A heavy command may start now.`}`
@@ -337,8 +337,8 @@ export function registerResourceGuard(on: On, _options: PluginOptions): void {
 
   // The same commands under the plugin's own prefix, as commands/*.md list
   // them; answered here directly, so the model is never involved.
-  on('command.run', { command: 'raw-plugin:resources' }, async $ => ({ text: resourcesText(await probe($)) }))
-  on('command.run', { command: 'raw-plugin:setup' }, async $ => {
+  on('command.run', { command: 'rp:resources' }, async $ => ({ text: resourcesText(await probe($)) }))
+  on('command.run', { command: 'rp:setup' }, async $ => {
     const p = await probe($)
     return { text: setupText($, p) }
   })
