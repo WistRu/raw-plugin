@@ -101,11 +101,13 @@ folder.
      run, every file said written must exist and be newer than the session,
      "tests pass" needs a passing run, "committed" needs `git commit`, and
      every `a + b = c` or `x of y = p %` is recomputed (`hooks/team/audit.ts`).
-  2. `mcp__rp__team_critic`, the subagent `rp:critic` on Opus with read-only
-     tools: the audit's lines, claim cards (claim, source, reproduced,
-     falsifier), one figure reproduced, a twelve-line checklist plus the
-     team's own, the breaker. `mode: heavy` adds a second critic for the
-     logic (premises, rivals, scope). Findings are lines
+  2. `mcp__rp__team_critic`, the subagent `rp:critic` on a model other than
+     the session's (Sonnet for a session on Opus, Opus otherwise), its
+     Bash, Edit and Write refused when they would write: the audit's lines,
+     claim cards (claim, source, reproduced, falsifier), one figure
+     reproduced, a twelve-line checklist plus the team's own, the breaker.
+     `mode: heavy` adds a second critic for the logic (premises, rivals,
+     scope). Findings are lines
      `F<n> [status] BLOCKING|NOTE|QUESTION USER|AGENT -- text`, kept as a
      run under `critic/`.
   3. `mcp__rp__team_answer`: the debate. The author answers each finding
@@ -115,10 +117,16 @@ folder.
      recorded on the task, and `awaiting_verify` is refused while a blocking
      finding is open (`force` skips, saying why).
   4. `mcp__rp__team_review`: the critic of the whole session, from a digest
-     of the transcript (`review/digest-<k>.md`): the main claims of the user
-     and the agent alike, the key ones verified, prior work, the checklist,
-     the breaker; earlier reviews are read first and their ledgers carried
-     over. Its `USER` findings go to the person as they stand.
+     of the transcript (`review/digest-<k>.md`; each message clipped to
+     3000 characters and each tool output to 800, the whole to 400 000, so
+     the critic reads a clipped record, not the transcript): the main
+     claims of the user and the agent alike, the key ones verified, prior
+     work, the checklist, the breaker; earlier reviews are read first and
+     their ledgers carried over. Its `USER` findings go to the person as
+     they stand. The review, the critic, the debate, the checklist and the
+     predictions work in a session of no team too, into
+     `_sessions/<id>/` beside the teams. Each call blocks the turn until
+     the critic answers (ten minutes at most).
   What the team learns: `mcp__rp__team_checklist add` appends one dated line
   per settled mistake (`CHECKLIST.md`, read by every critic, never
   reworded); `mcp__rp__team_predict` records what a role expects before a
@@ -133,8 +141,19 @@ folder.
   plugin's store), by its desktop address (`team.json`) when the id changed,
   or by the brief; a `/clear` or a resume carries the membership over.
 - **`/team status`** draws the board (a pane in the lead's session,
-  `team_task board` for the model); **`/team close`** ends the team and
-  asks for the final report in one schema: done · worked or not · next.
+  `team_task board` for the model); **`/team close`** (or the lead's
+  `mcp__rp__team_close`, with `archive: true` to archive the role sessions
+  through the app when the person agreed) ends the team and asks for the
+  final report in one schema: done · worked or not · next.
+- **Cost in every session**: the plugin is installed at user scope, so the
+  membership check runs on every Bash, Edit and Write of every session on
+  the machine; outside a team it costs one listing of the teams folder per
+  minute and nothing else.
+- **Tried live on 2026-10-21** (a two-role toy team in Claude Desktop):
+  the sessions start from the hook, bind from the brief, message the lead
+  and each other, the critic gate and the verifier wake work, the lead's
+  poll delivers a waiting event. Not yet seen live: waking a session that
+  has stopped, and the terminal fallback with subagents.
 
 Ported from BTC5Model's convergence roles (card, handoff notes,
 `role_tasks.py`, `role_inbox.py`, `/resume-role`, `/role-handoff`) with the

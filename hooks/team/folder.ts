@@ -59,15 +59,21 @@ export async function writeJson($: EngineInterface, path: string, value: unknown
 // time per dispatch and `$.clock.sleep` spends it, while a `$.process.run`
 // is free. `mkdir` is atomic, so whoever makes the directory holds it. A
 // lock older than the stale limit is taken over by renaming it first (one
-// `mv` of a directory succeeds, the other fails), so two sessions never
-// both believe they removed it and both hold the new one.
+// `mv` of a directory succeeds, the other fails). The rename is checked
+// again after it: a lock that is young once moved was another session's
+// fresh one, taken between this session's reading its age and the move,
+// so it goes back and the wait goes on.
 const LOCK_SH = `lock="$1"; wait_s="$2"; stale_s="$3"
+age() { m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0); echo $(( $(date +%s) - m )); }
 deadline=$(( $(date +%s) + wait_s ))
 while ! mkdir "$lock" 2>/dev/null; do
   now=$(date +%s)
-  mtime=$(stat -c %Y "$lock" 2>/dev/null || stat -f %m "$lock" 2>/dev/null || echo "$now")
-  if [ $(( now - mtime )) -gt "$stale_s" ] && mv "$lock" "$lock.stale.$$" 2>/dev/null; then
-    rmdir "$lock.stale.$$" 2>/dev/null
+  if [ "$(age "$lock")" -gt "$stale_s" ] && mv "$lock" "$lock.stale.$$" 2>/dev/null; then
+    if [ "$(age "$lock.stale.$$")" -gt "$stale_s" ]; then
+      rmdir "$lock.stale.$$" 2>/dev/null
+    else
+      mv "$lock.stale.$$" "$lock" 2>/dev/null || rmdir "$lock.stale.$$" 2>/dev/null
+    fi
     continue
   fi
   [ "$now" -ge "$deadline" ] && exit 3

@@ -100,19 +100,28 @@ export function tokenize(command: string): Word[][] {
 
 const isRedirect = (w: Word) => !w.isQuoted && /^(\d|&)?>{1,2}\|?$/.test(w.text)
 
-const isPathLike = (w: Word): boolean => {
+const isSedExpression = (word: string) => /^[sy][^A-Za-z0-9\s]/.test(word) && (word.match(/[/|@#]/g) ?? []).length >= 2
+
+// A word that names a file or a directory. After a writing verb every
+// argument is one unless it is a flag, a pure number or a sed expression
+// (`rm -rf docs`, `touch Makefile`); elsewhere only what looks like a
+// path (a `/`, a dot prefix, an extension).
+const isPathLike = (w: Word, afterWriter = false): boolean => {
   const word = w.text
   if (word === '' || word === '-' || word === '--') return false
   if (!w.isQuoted && word.startsWith('-')) return false
   if (/^\w+:\/\//.test(word)) return false
-  // a sed or y command, quoted or bare: s/x/y/, 's|a|b|', y/a/b/
-  if (/^[sy][^A-Za-z0-9\s]/.test(word) && (word.match(/[/|@#]/g) ?? []).length >= 2) return false
+  if (isSedExpression(word)) return false
+  if (/^\d+(\.\d+)*$/.test(word)) return false
   if (word === '.' || word === '..' || word === '~') return true
   if (/^(\/|\.\/|\.\.\/|~\/)/.test(word)) return true
   if (word.includes('/')) return true
-  if (w.isQuoted) return /^[\w.-]+\.[A-Za-z0-9]{1,8}$/.test(word)
-  return /^[\w.-]+\.[A-Za-z0-9]{1,8}$/.test(word) && !/^\d+(\.\d+)*$/.test(word)
+  if (afterWriter) return !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word) || /^(of|if)=/.test(word)
+  return /^[\w.-]+\.[A-Za-z0-9]{1,8}$/.test(word)
 }
+
+// `of=path` and `if=path` (dd) name their path after the `=`.
+const pathOf = (w: Word) => (/^(of|if)=/.test(w.text) ? w.text.slice(3) : w.text)
 
 // Leading `VAR=value` words and leaders dropped; the program's own name
 // without its directory.
@@ -131,32 +140,52 @@ function program(words: Word[]): { name: string; rest: Word[] } {
   return { name: head.slice(head.lastIndexOf('/') + 1), rest: list.slice(1) }
 }
 
-function readSegment(words: Word[], out: WriteTargets): void {
+// Where the shell stands after a `cd`: relative targets after it are
+// read under that directory; `cd` with no word goes home.
+type Shell = { cwd: string | undefined }
+
+const under = (shell: Shell, p: string) => (shell.cwd === undefined || /^(\/|~)/.test(p) ? p : `${shell.cwd}/${p}`)
+
+function readSegment(words: Word[], out: WriteTargets, shell: Shell): void {
   // redirections first: each `>` word's target
   const plain: Word[] = []
   for (let i = 0; i < words.length; i++) {
     const w = words[i] ?? { text: '', isQuoted: false }
+    // input redirections and here-strings: `< file`, `<<< word`, `<< EOF`
+    if (!w.isQuoted && /^\d?<{1,3}$/.test(w.text)) {
+      i++
+      continue
+    }
     if (isRedirect(w)) {
       const target = words[i + 1]
       i++
       if (!target || /^&\d*$/.test(target.text)) continue
       out.verbs.push('>')
-      out.paths.push(target.text)
+      out.paths.push(under(shell, target.text))
       continue
     }
     plain.push(w)
   }
   const { name, rest } = program(plain)
+  if (name === 'cd' || name === 'pushd') {
+    const to = rest.find(w => !w.text.startsWith('-'))?.text
+    shell.cwd = to === undefined ? '~' : under(shell, to)
+    return
+  }
+  if (name === 'popd') {
+    shell.cwd = undefined
+    return
+  }
   if (SHELLS.has(name)) {
     // `bash -c "<inner>"`: what the inner command writes
     const at = rest.findIndex(w => w.text === '-c')
     const inner = at >= 0 ? rest[at + 1] : undefined
-    if (inner) for (const seg of tokenize(inner.text)) readSegment(seg, out)
+    if (inner) for (const seg of tokenize(inner.text)) readSegment(seg, out, shell)
     return
   }
   if (WRITERS.has(name) || (INPLACE.has(name) && rest.some(w => !w.isQuoted && /^-\w*i/.test(w.text)))) {
     out.verbs.push(name)
-    out.paths.push(...rest.filter(isPathLike).map(w => w.text))
+    out.paths.push(...rest.filter(w => isPathLike(w, true)).map(w => under(shell, pathOf(w))))
     return
   }
   if (name === 'git') {
@@ -177,9 +206,9 @@ function readSegment(words: Word[], out: WriteTargets): void {
       out.verbs.push(`git ${verb}`)
       const dd = after.findIndex(w => w.text === '--')
       const args = dd >= 0 ? after.slice(dd + 1) : after
-      const paths = args.filter(isPathLike).map(w => w.text)
-      if (paths.length === 0 || after.some(w => !w.isQuoted && (w.text === '-A' || w.text === '-a' || w.text === '--all' || w.text === '.'))) out.isWholeTree = true
-      out.paths.push(...paths.filter(p => p !== '.'))
+      const paths = args.filter(w => isPathLike(w, true)).map(w => w.text)
+      if (shell.cwd !== undefined || paths.length === 0 || after.some(w => !w.isQuoted && (w.text === '-A' || w.text === '-a' || w.text === '--all' || w.text === '.'))) out.isWholeTree = true
+      out.paths.push(...paths.filter(p => p !== '.').map(p => under(shell, p)))
     }
   }
 }
@@ -187,6 +216,7 @@ function readSegment(words: Word[], out: WriteTargets): void {
 // Undefined when the command writes nothing this reading can see.
 export function writeTargets(command: string): WriteTargets | undefined {
   const out: WriteTargets = { verbs: [], paths: [], isWholeTree: false }
-  for (const seg of tokenize(command)) readSegment(seg, out)
+  const shell: Shell = { cwd: undefined }
+  for (const seg of tokenize(command)) readSegment(seg, out, shell)
   return out.verbs.length > 0 ? out : undefined
 }

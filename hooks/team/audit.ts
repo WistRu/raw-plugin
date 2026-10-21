@@ -106,20 +106,29 @@ export function doneClaims(result: string): DoneClaims {
   return { files: [...files], tests, commits }
 }
 
-const PASS = /\b(\d+)\s+(pass(ed|ing)?|passed)\b|\bok\b.*\b\d+\s+passed|\d+\s+tests?\s+(passed|ok)/i
-const FAIL = /\b([1-9]\d*)\s+(fail(ed|ing|ures?)?|error(s)?)\b|FAILED|Traceback|panicked/
-const RAN = /\bRan \d+ tests?\b|\btest result:|\d+ passed|\d+ pass\b|\d+ fail(ed)?\b/i
+// A test runner's own summary lines, at a line's start: pytest ("23 passed
+// in 1.2s", "3 failed, 20 passed"), bun / claude plugin test (" 30 pass",
+// " 2 fail", "(fail) name", "Ran 33 tests"), cargo ("test result: ok. 12
+// passed; 0 failed"), jest ("Tests: 2 failed, 5 passed").
+const PASS = /^\s*(?:=+\s*)?\d+\s+pass(?:ed)?\b|^\s*test result: ok\b|^\s*Tests:.*\b\d+\s+passed|\b\d+ passed;\s*0 failed/im
+// The counted forms are read without regard to case; the bare marks
+// (`FAILED`, a traceback, a panic) with it, or "0 failed" would be one.
+const FAIL_COUNTS = /^\s*\(fail\)|^\s*(?:=+\s*)?[1-9]\d*\s+fail(?:ed|ures?)?\b|\b[1-9]\d*\s+failed[;,]|^\s*test result: FAILED|^\s*Tests:.*\b[1-9]\d*\s+failed/im
+const FAIL_MARKS = /\bFAILED\b|Traceback \(most recent|panicked at/
+const FAIL = { test: (t: string) => FAIL_COUNTS.test(t) || FAIL_MARKS.test(t) }
+const RAN = /^\s*Ran \d+ tests?\b|^\s*test result:|^\s*Tests:\s|^\s*(?:=+\s*)?\d+\s+(?:pass(?:ed)?|fail(?:ed)?)\b|^\s*\(pass\)|^\s*\(fail\)/im
 
 // "Tests pass" is proved by the NEWEST test output of the session, not by
-// any green one; "committed <hash>" by that hash in some output.
+// any green one, and it must carry a passing count; "committed <hash>" by
+// that hash in some output.
 export function auditDone(result: string, evidence: Evidence): Finding[] {
   const out: Finding[] = []
   const claims = doneClaims(result)
   if (claims.tests) {
-    const newest = [...evidence.toolTexts].reverse().find(t => RAN.test(t) || PASS.test(t) || FAIL.test(t))
+    const newest = [...evidence.toolTexts].reverse().find(t => RAN.test(t))
     if (!newest) out.push({ kind: 'tests', severity: 'blocking', text: 'the result says the tests pass, but no tool output of this session shows a test run' })
     else if (FAIL.test(newest)) out.push({ kind: 'tests', severity: 'blocking', text: 'the result says the tests pass, but the newest test output of this session shows failures' })
-    else if (!PASS.test(newest) && !/\bRan \d+ tests?\b/i.test(newest)) out.push({ kind: 'tests', severity: 'note', text: 'the newest test output of this session names no passing count; the claim rests on it' })
+    else if (!PASS.test(newest)) out.push({ kind: 'tests', severity: 'blocking', text: 'the result says the tests pass, but the newest test output of this session names no passing count (a filtered or cut output proves nothing)' })
   }
   if (claims.commits) {
     if (!evidence.commands.some(c => /\bgit\s+commit\b/.test(c)))

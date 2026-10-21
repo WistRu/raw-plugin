@@ -40,6 +40,9 @@ export type Team = {
   leadAddress?: string
   roles: Role[]
   rules: string[]
+  // The model the role sessions are started on, when the lead names one
+  // (a cheaper id for mechanical roles); absent = the app's default.
+  roleModel?: string
   created: string
   closed?: string
 }

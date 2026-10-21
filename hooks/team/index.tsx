@@ -292,6 +292,7 @@ async function startRoles($: EngineInterface, team: Team, ledger: Ledger, names:
         context: 'fresh',
         use_worktree: false,
         name: r.name.replace(/[^a-z0-9-]/g, '').slice(0, 24) || undefined,
+        model: team.roleModel,
       } as never).catch(err => ({ deny: String(err) }))
       const address = 'text' in ran ? ran.text?.match(/local_[0-9a-f-]{8,}/)?.[0] : undefined
       if (address) {
@@ -602,9 +603,15 @@ const TOOLS = [
           },
         },
         rules: { type: 'array', items: { type: 'string' }, description: 'Extra rules for this team, beside the six every team keeps' },
+        model: { type: 'string', description: 'The model the role sessions start on (a cheaper id for mechanical roles); absent = the app\'s default, this session\'s model' },
       },
       required: ['goal', 'roles'],
     },
+  },
+  {
+    name: 'team_close',
+    description: 'The lead closes the team: every member is told, their bindings end, the folder stays. With archive: true the role sessions are archived through the desktop app (only when the person agreed to that).',
+    inputSchema: { type: 'object', properties: { archive: { type: 'boolean' } } },
   },
   {
     name: 'team_join',
@@ -772,7 +779,7 @@ async function createTeam($: EngineInterface, input: Input): Promise<string> {
   const id = await $.session.id()
   const team: Team = {
     slug, goal, dir, root: await $.session.root(), lead: id, leadAddress: await ownAddress($), roles,
-    rules: [...RULES, ...strs(input.rules)], created: at,
+    rules: [...RULES, ...strs(input.rules)], roleModel: str(input.model) || undefined, created: at,
   }
   let ledger: Ledger = { next: 1, tasks: [] }
   for (const t of Array.isArray(input.tasks) ? (input.tasks as Input[]) : []) {
@@ -1007,7 +1014,9 @@ async function statusText($: EngineInterface, m: Membership): Promise<string> {
   return unread.length ? `${text}\n\n## Unread events for the lead: ${unread.length}\n${unread.map(e => `- ${e.name}`).join('\n')}` : text
 }
 
-async function closeTeam($: EngineInterface, m: Membership): Promise<string> {
+const ARCHIVE_SESSION = 'mcp__ccd_session_mgmt__archive_session'
+
+async function closeTeam($: EngineInterface, m: Membership, archive = false): Promise<string> {
   const closed = await stamp($)
   const team = (await readTeam($, m.team.dir)) ?? m.team
   const told: string[] = []
@@ -1022,7 +1031,21 @@ async function closeTeam($: EngineInterface, m: Membership): Promise<string> {
   poll = undefined
   me = undefined
   meAt = 0
-  return `Team ${team.slug} closed at ${closed}; its folder stays at ${team.dir}. ${told.join(', ')}.`
+  let archived = ''
+  if (archive) {
+    const tools = (await $.tool.list().catch(() => [])).map(t => t.name)
+    const notes: string[] = []
+    for (const r of team.roles) {
+      if (!r.address || !tools.includes(ARCHIVE_SESSION)) {
+        notes.push(`${r.name}: not archived (${r.address ? 'no archive tool here' : 'no session'})`)
+        continue
+      }
+      const ran = await $.tool.call({ tool: ARCHIVE_SESSION, session_id: r.address, reason: `team ${team.slug} closed` } as never).catch(err => ({ deny: String(err) }))
+      notes.push(`${r.name}: ${'deny' in ran && ran.deny ? `not archived (${ran.deny})` : ran.isError ? `not archived (${ran.text ?? 'refused'})` : 'archived'}`)
+    }
+    archived = ` ${notes.join(', ')}.`
+  }
+  return `Team ${team.slug} closed at ${closed}; its folder stays at ${team.dir}. ${told.join(', ')}.${archived}`
 }
 
 async function teamCommand($: EngineInterface, argsText: string): Promise<{ text: string; context?: string[] }> {
@@ -1210,6 +1233,14 @@ export function registerTeam(on: On): void {
       const got = await subjectText($, e as unknown as Input)
       if ('error' in got) return `team_audit: ${got.error}`
       return auditOf($, got.text)
+    }),
+  )
+  on('tool.call', { tool: 'mcp__rp__team_close' }, ($, e) =>
+    safely(async () => {
+      const got = await teamOf($, e.agentId)
+      if ('text' in got) return got.text
+      if (got.me.role !== 'lead') return 'Only the lead closes the team.'
+      return closeTeam($, got.me, (e as unknown as Input).archive === true)
     }),
   )
   on('tool.call', { tool: 'mcp__rp__team_role' }, ($, e) =>

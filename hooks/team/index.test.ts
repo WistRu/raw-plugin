@@ -123,6 +123,15 @@ test('what a Bash command writes is read off its text, quotes honoured', async (
   expect(writeTargets('git add .')?.isWholeTree).toBe(true)
   expect(writeTargets("git commit -m 'fix a.ts and b.ts' -- src/a.ts")).toEqual({ verbs: ['git commit'], paths: ['src/a.ts'], isWholeTree: false })
   expect(writeTargets('sudo -u wist tee /etc/x <<< y')).toEqual({ verbs: ['tee'], paths: ['/etc/x'], isWholeTree: false })
+  // the critic's second round: bare names after a writing verb, and cd
+  expect(writeTargets('rm -rf docs')).toEqual({ verbs: ['rm'], paths: ['docs'], isWholeTree: false })
+  expect(writeTargets('touch Makefile')).toEqual({ verbs: ['touch'], paths: ['Makefile'], isWholeTree: false })
+  expect(writeTargets('mv src/a.ts docs')).toEqual({ verbs: ['mv'], paths: ['src/a.ts', 'docs'], isWholeTree: false })
+  expect(writeTargets('chmod 644 src/a.ts')).toEqual({ verbs: ['chmod'], paths: ['src/a.ts'], isWholeTree: false })
+  expect(writeTargets('cd ../elsewhere && touch src/x.ts')).toEqual({ verbs: ['touch'], paths: ['../elsewhere/src/x.ts'], isWholeTree: false })
+  expect(writeTargets('cd /tmp; echo x > out.txt')).toEqual({ verbs: ['>'], paths: ['/tmp/out.txt'], isWholeTree: false })
+  expect(writeTargets('cd src && git add a.ts')?.isWholeTree).toBe(true)
+  expect(writeTargets('dd if=/dev/zero of=/tmp/blob bs=1M count=1')).toEqual({ verbs: ['dd'], paths: ['/dev/zero', '/tmp/blob'], isWholeTree: false })
 })
 
 // What the engine answers beneath the plugin. With `bound`, the registry
@@ -228,6 +237,9 @@ test('a member edits inside its zone and its own note, nowhere else', async ($, 
   expect((await bash('git stash')).deny).toMatch(/rewrites the tree/)
   expect((await bash('git add -A')).deny).toMatch(/rewrites the tree/)
   expect((await bash('cp src/a.ts ~/a.ts')).deny).toMatch(/would write ~\/a\.ts/)
+  expect((await bash('rm -rf docs')).deny).toMatch(/would write docs/)
+  expect((await bash('cd ../elsewhere && touch src/x.ts')).deny).toMatch(/would write \.\.\/elsewhere\/src\/x\.ts/)
+  expect((await bash('touch src/new.ts')).deny).toBeUndefined()
 })
 
 test('a ledger write takes the folder lock in a process and gives it back', async ($, on) => {

@@ -33,6 +33,18 @@ test('done-claims need their proof: a passing run, a git commit, a written file'
   // a commit hash the record never showed
   const ghost = auditDone('committed deadbeef1', { toolTexts: ['[main 5c515a9] x'], commands: ['git commit -q -F msg'] })
   expect(ghost.map(f => f.text)).toEqual(['the commit deadbeef1 appears in no tool output of this session (no git log or commit line shows it)'])
+  // the critic's second round: bun's "(fail)" lines, and a cut output with no passing count
+  const bunRed = auditDone('tests pass', { toolTexts: ['(pass) a [1ms]\n(fail) b [2ms]\n  AssertionError\n\nRan 33 tests across 5 files.'], commands: [] })
+  expect(bunRed.map(f => f.text)).toEqual(['the result says the tests pass, but the newest test output of this session shows failures'])
+  const cut = auditDone('tests pass', { toolTexts: ['Ran 33 tests across 5 files. [1.4s]'], commands: [] })
+  expect(cut.map(f => f.text)).toEqual(['the result says the tests pass, but the newest test output of this session names no passing count (a filtered or cut output proves nothing)'])
+  const bunGreen = auditDone('tests pass', { toolTexts: [' 33 pass\n 0 fail\nRan 33 tests across 5 files.'], commands: [] })
+  expect(bunGreen).toEqual([])
+  const cargo = auditDone('tests pass', { toolTexts: ['test result: ok. 12 passed; 0 failed; 0 ignored'], commands: [] })
+  expect(cargo).toEqual([])
+  // a file listing with the word "passed" in it is not a test run
+  const listing = auditDone('tests pass', { toolTexts: ['const PASS = /\\d+ passed/'], commands: [] })
+  expect(listing.map(f => f.kind)).toEqual(['tests'])
 })
 
 test('arithmetic lines are recomputed', async () => {
