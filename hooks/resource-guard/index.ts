@@ -36,11 +36,8 @@ const SLICE_SWAP_SHARE = 0.5 // of total swap
 // Without a slice (macOS, Windows, Linux without systemd) the watchdog kills
 // the newest own job when available RAM falls under this many bytes.
 const WATCHDOG_MIN = 1 * 1024 ** 3
-// A heavy command waits while the CPU is within this many °C of its own limit
-// (the sensor's max, e.g. 110 °C on this laptop), or at HOT_C where the limit
-// is unknown; and while the disk is DISK_FULL_PCT full.
-const HOT_MARGIN_C = 10
-const HOT_C = 95
+// A heavy command waits while the disk is this full (%). Temperature is
+// shown but never a reason to wait: the CPU slows itself down when hot.
 const DISK_FULL_PCT = 95
 // A sysmon sample older than this is not used in place of the probe (ms).
 const SAMPLE_FRESH_MS = 3000
@@ -151,8 +148,6 @@ function shortage(p: Probe, expected: number): string | undefined {
   }
   const maxCpu = p.cores * CPU_FACTOR
   if (p.cpu > maxCpu) return `CPU: ${p.cpu.toFixed(1)} of ${p.cores} cores busy`
-  const hot = p.cpu_temp_max !== undefined ? p.cpu_temp_max - HOT_MARGIN_C : HOT_C
-  if (p.cpu_temp !== undefined && p.cpu_temp >= hot) return `CPU too hot: ${Math.round(p.cpu_temp)}°C (limit ${Math.round(hot)}°C)`
   if (p.disk_pct !== undefined && p.disk_pct >= DISK_FULL_PCT) return `disk nearly full: ${Math.round(p.disk_pct)}% used`
   return undefined
 }
@@ -355,7 +350,7 @@ export function registerResourceGuard(on: On): void {
     const text = [
       `# Machine resources (${$.plugin.name})`,
       `This machine: ${p.os}, ${p.cores} cores, ${gb(p.mem_total)} GB RAM, ${p.swap_total > 0 ? gb(p.swap_total) + ' GB swap' : 'no swap'}.`,
-      `Every Bash command except plain file, text and git work counts as heavy: it is held with the current figures while less than ${gb(reserve(p))} GB RAM is available (plus what the command took last time), all ${p.cores} cores are busy, the CPU is within ${HOT_MARGIN_C}°C of its limit or the disk is ${DISK_FULL_PCT}% full. Then wait, or run fewer in parallel, and retry. Heavy commands start one at a time.`,
+      `Every Bash command except plain file, text and git work counts as heavy: it is held with the current figures while less than ${gb(reserve(p))} GB RAM is available (plus what the command took last time), all ${p.cores} cores are busy or the disk is ${DISK_FULL_PCT}% full. Then wait, or run fewer in parallel, and retry. Heavy commands start one at a time.`,
       `Before starting several jobs at once, call the tool mcp__${$.plugin.name}__resources and size the batch by it.`,
       sliceReady
         ? `A heavy command runs inside the memory slice ${SLICE} by itself (slowed down above ${gb(p.mem_total * SLICE_HIGH_SHARE)} GB, killed at ${gb(p.mem_total * SLICE_MAX_SHARE)} GB: exit 137 means that, rerun with fewer jobs). Write the plain command, never a wrapper such as \`heavy\`. Inside it \`cd\` does not carry over to the next command.`

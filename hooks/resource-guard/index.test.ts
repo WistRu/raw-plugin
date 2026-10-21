@@ -211,19 +211,12 @@ test('the resources tool and command report the snapshot; setup hints once per m
   expect(prefixedSetup.text).toMatch(/sudo .*setup-swap\.sh/)
 })
 
-test('a hot CPU or a nearly full disk holds a heavy command', async ($, on) => {
-  let extra = ',"cpu_temp":97'
+test('a nearly full disk holds a heavy command; a hot CPU does not', async ($, on) => {
+  let extra = ',"cpu_temp":101,"cpu_temp_max":110'
   engine(on, { machine: () => machine().replace('}', `${extra}}`) })
   await start($)
   const hot = await $.tool.call({ tool: 'Bash', command: './sim' })
-  expect(hot.deny).toMatch(/CPU too hot: 97°C \(limit 95°C\)/)
-  // With the sensor's own limit known, the threshold is 10°C under it.
-  extra = ',"cpu_temp":97,"cpu_temp_max":110'
-  const fine = await $.tool.call({ tool: 'Bash', command: './sim' })
-  expect(fine.deny).toBeUndefined()
-  extra = ',"cpu_temp":101,"cpu_temp_max":110'
-  const over = await $.tool.call({ tool: 'Bash', command: './sim' })
-  expect(over.deny).toMatch(/CPU too hot: 101°C \(limit 100°C\)/)
+  expect(hot.deny).toBeUndefined()
   extra = ',"disk_pct":96.4'
   const full = await $.tool.call({ tool: 'Bash', command: './sim' })
   expect(full.deny).toMatch(/disk nearly full: 96% used/)
