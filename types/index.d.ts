@@ -24,6 +24,8 @@ export type Snapshot = {
   io: { read: number; write: number }
   net?: { iface: string; down: number; up: number }
   cpuTemp?: number
+  // The CPU's own limit (°C) as the sensor reports it, when it does.
+  cpuTempMax?: number
   nvmeTemp?: number
   fan?: number
   battery?: { pct: number; status: string }

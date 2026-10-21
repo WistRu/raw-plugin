@@ -33,7 +33,7 @@ Claude Code knows what the machine can carry and never overloads it.
   before sizing a batch); `/rp:resources` (or `/resources`) for the person;
   `/rp:setup` (or `/resources setup`) shows how to make Linux swap Mac-like (`hooks/resource-guard/setup-swap.sh`:
   zram first, disk files on demand; hinted once per machine).
-- **Holds heavy commands also when the CPU is at 95 °C or the disk 95 % full**
+- **Holds heavy commands also when the CPU is within 10 °C of its own limit (the sensor's max; 95 °C where unknown) or the disk 95 % full**
   (figures from sysmon's sample on Linux).
 - On Linux the guard reads sysmon's half-second sample instead of spawning
   its own probe; the probe script runs at session start and elsewhere.

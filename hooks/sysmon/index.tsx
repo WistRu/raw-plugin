@@ -15,7 +15,10 @@ export const isLineOn = atom({ plugin: 'rp', key: 'isLineOn' } as const, true)
 // The newest sample, for other modules (resource-guard reads it instead of
 // spawning its own probe on Linux); undefined before the first sample.
 let latestSnapshot: Snapshot | undefined
+let samples = 0
 export const latest = (): Snapshot | undefined => latestSnapshot
+// How many samples were taken this session: the first one has no rates yet.
+export const sampleCount = (): number => samples
 // One sample now, outside the timer (tests).
 export const sampleNow = ($: EngineInterface): Promise<void> => sample($)
 
@@ -204,6 +207,8 @@ let prevProcs: { at: number; procs: Map<number, ProcTimes> } | undefined
 let programs: { topCpu: Program[]; topMem: Program[] } = { topCpu: [], topMem: [] }
 let disk: Snapshot['disk']
 let hwmon: Record<string, string> | undefined
+// The CPU's limit in millidegrees, read once; null when the sensor has none.
+let cpuTempMax: number | null | undefined
 let ticks = 0
 
 async function readText($: EngineInterface, path: string): Promise<string | undefined> {
@@ -272,6 +277,8 @@ async function sample($: EngineInterface) {
 
   const hw = await findHwmon($)
   const cpuTemp = hw.coretemp ? await readNum($, `${hw.coretemp}/temp1_input`) : undefined
+  if (hw.coretemp && cpuTempMax === undefined)
+    cpuTempMax = (await readNum($, `${hw.coretemp}/temp1_max`)) ?? (await readNum($, `${hw.coretemp}/temp1_crit`)) ?? null
   const nvmeTemp = hw.nvme ? await readNum($, `${hw.nvme}/temp1_input`) : undefined
   const fanDir = Object.entries(hw).find(([name]) => name === 'asus' || name.includes('fan'))?.[1]
   const fan = fanDir ? await readNum($, `${fanDir}/fan1_input`) : undefined
@@ -306,6 +313,7 @@ async function sample($: EngineInterface) {
           }
         : undefined,
     cpuTemp: cpuTemp !== undefined ? cpuTemp / 1000 : undefined,
+    cpuTempMax: cpuTempMax ? cpuTempMax / 1000 : undefined,
     nvmeTemp: nvmeTemp !== undefined ? nvmeTemp / 1000 : undefined,
     fan,
     battery: batPct !== undefined ? { pct: batPct, status: batStatus ?? '' } : undefined,
@@ -315,6 +323,7 @@ async function sample($: EngineInterface) {
 
   prev = { at, cpu, io, gpuIdleMs, net: iface && dev ? { iface, ...dev } : undefined }
   latestSnapshot = s
+  samples += 1
   await update($, snap, () => s)
 }
 
