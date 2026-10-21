@@ -1193,6 +1193,44 @@ async function reviewCommand($: EngineInterface, argsText: string): Promise<{ te
   return { text: await reviewTool($, await memberOrSolo($), { focus, session }).catch(err => `review: ${String(err)}`) }
 }
 
+// The whole cycle on one result: the command runs the audit and both
+// critics itself, then hands the model the steps only the author can take
+// (answer with evidence, round until no blocking finding is open, the
+// session critic last, the report).
+async function fullCommand($: EngineInterface, argsText: string): Promise<{ text: string; context?: string[] }> {
+  const words = (argsText ?? '').trim().split(/\s+/).filter(Boolean)
+  const session = words.includes('--session')
+  const taskAt = words.indexOf('--task')
+  const task = taskAt >= 0 ? words[taskAt + 1] : undefined
+  const subject = words.filter((w, i) => w !== '--session' && w !== '--task' && i !== taskAt + 1).join(' ')
+  if (!subject) return { text: 'Usage: /critic-full <path or claim> [--session] [--task T-NNNN]' }
+  const isPath = !subject.includes(' ') && (await $.fs.exists(subject).catch(() => false))
+  const input: Input = isPath ? { path: subject } : { claim: subject }
+  input.mode = 'heavy'
+  input.purpose = 'a full critique: the result goes nowhere until no blocking finding is open'
+  if (task) input.task = task
+  const first = await criticTool($, await memberOrSolo($), input).catch(err => `critic: ${String(err)}`)
+  const runId = first.match(/\(run (R[^)\s]+)\)/)?.[1]
+  const text = [
+    `FULL CRITIQUE of ${subject}: step 1 of 4 done (the audit, the facts critic and the logic critic). The rest costs two to five more critic calls on the other model and ten to twenty minutes.`,
+    '',
+    first,
+  ].join('\n')
+  if (!runId) return { text }
+  return {
+    text,
+    context: [
+      [
+        `FULL CRITIQUE, the steps left are yours (run ${runId}):`,
+        `2. For every finding of run ${runId}, check it yourself against the files and the record first. Then answer it with mcp__rp__critic_answer: "fixed" after you fixed it (what and where), "refuted" with the evidence, "user" when the person must decide, "cannot" with why. Never concede without evidence; never dismiss without it. A BLOCKING finding you can neither fix nor refute keeps the result where it is.`,
+        '3. Read the verdict. While a BLOCKING finding is still OPEN and rounds remain (three at most), fix and answer again.',
+        `4. Then run mcp__rp__critic_session${session ? ' with session: true' : ''} with focus "the result ${subject} and how it was reached", and answer its findings the same way.`,
+        '5. Report to the person in one schema: what was done · worked or not · what is needed next. Quote every USER finding as it stands; give both positions on every OPEN one; cite only outputs that are in the record unfiltered.',
+      ].join('\n'),
+    ],
+  }
+}
+
 async function auditCommand($: EngineInterface, argsText: string): Promise<{ text: string }> {
   const subject = (argsText ?? '').trim()
   if (!subject) return { text: 'Usage: /critic-audit <path or text>' }
@@ -1231,6 +1269,7 @@ export async function startTeam($: EngineInterface): Promise<void> {
   await command({ name: 'critic', description: 'A fresh-eyes critic of a result: the mechanical audit, then the critic subagent; --heavy adds the logic critic', argumentHint: '<path or claim> [--heavy] [--task T-NNNN]' })
   await command({ name: 'critic-session', description: 'The critic of this whole session; --session runs it as a visible session you can talk to', argumentHint: '[--session] [focus]' })
   await command({ name: 'critic-audit', description: 'The mechanical audit of a result against this session\'s record, no model', argumentHint: '<path or text>' })
+  await command({ name: 'critic-full', description: 'The whole critique of one result: audit, facts and logic critics, then the debate until no blocking finding is open, then the session critic, then the report', argumentHint: '<path or claim> [--session] [--task T-NNNN]' })
   for (const tool of TOOLS) await $.tool.register(tool)
   // A different model from the author's, so the blind spots differ: Opus
   // for a session on anything else, Sonnet for a session on Opus (the
@@ -1273,6 +1312,8 @@ export function registerTeam(on: On): void {
   on('command.run', { command: 'rp:critic-session' }, ($, e) => reviewCommand($, e.args))
   on('command.run', { command: 'critic-audit' }, ($, e) => auditCommand($, e.args))
   on('command.run', { command: 'rp:critic-audit' }, ($, e) => auditCommand($, e.args))
+  on('command.run', { command: 'critic-full' }, ($, e) => fullCommand($, e.args))
+  on('command.run', { command: 'rp:critic-full' }, ($, e) => fullCommand($, e.args))
 
   // The critic is the tool's to spawn, never the model's.
   on('agent.offer', { agent: `rp:${CRITIC}` }, () => ({ isOffered: false }))

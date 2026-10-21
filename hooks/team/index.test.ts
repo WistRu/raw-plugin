@@ -187,6 +187,9 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], bound = false, wo
   on('clock.sleep', () => ({ value: undefined }))
   on('process.run', (_, e) => {
     runs.push([...e.argv])
+    // no branch exists in this world, so the worktree module is silent here
+    if (e.argv[0] === 'git' && e.argv[1] === 'rev-parse' && e.argv[2] === '--verify')
+      return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     // whether this world has flock decides which lock the test sees
     if (e.argv[0] === 'sh' && String(e.argv[2]).includes('command -v flock'))
       return { value: { exitCode: world.flock ? 0 : 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -219,6 +222,14 @@ test('/team status in a session of no team says so', async ($, on) => {
   await start($)
   const ran = await $.command.run({ command: 'team', args: 'status' })
   expect(ran.text).toMatch(/in no team/)
+})
+
+test('the critic commands answer their usage when given nothing', async ($, on) => {
+  engine(on)
+  await start($)
+  expect((await $.command.run({ command: 'critic', args: '' })).text).toMatch(/^Usage: \/critic </)
+  expect((await $.command.run({ command: 'critic-audit', args: '' })).text).toMatch(/^Usage: \/critic-audit/)
+  expect((await $.command.run({ command: 'critic-full', args: '' })).text).toMatch(/^Usage: \/critic-full/)
 })
 
 test('team_create refuses a draft it cannot use', async ($, on) => {

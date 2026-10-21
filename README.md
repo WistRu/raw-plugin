@@ -134,7 +134,11 @@ folder.
   The six work in any session, team or not (`_sessions/<id>/` beside the
   teams), as tools the model calls or as the person's own commands:
   `/critic-audit <path or text>`, `/critic <path or claim> [--heavy] [--task
-  T-NNNN]`, `/critic-session [--session] [focus]`.
+  T-NNNN]`, `/critic-session [--session] [focus]`, and `/critic-full <path
+  or claim> [--session] [--task T-NNNN]`, the whole cycle on one result:
+  the command runs the audit and both critics, then leaves the model the
+  steps only the author can take (answer each finding with evidence, round
+  until no blocking finding is open, the session critic last, the report).
   What the team learns: `mcp__rp__critic_checklist add` appends one dated line
   per settled mistake (`CHECKLIST.md`, read by every critic, never
   reworded); `mcp__rp__critic_predict` records what a role expects before a
