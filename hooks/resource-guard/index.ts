@@ -86,7 +86,16 @@ const SETUP = 'hooks/resource-guard/setup-swap.sh'
 // The machine now: sysmon's newest sample when it is fresh (Linux, no process
 // spawned), else probe.sh. The first call, at session start, is always the
 // script: it also says what the machine is (systemd, swap, the run folder).
+// A call made while the start is still running (a command typed at once)
+// waits for it, so it answers from the sample too.
+let starting: Promise<void> | undefined
+
 async function probe($: EngineInterface): Promise<Probe> {
+  if (starting) await starting
+  return probeNow($)
+}
+
+async function probeNow($: EngineInterface): Promise<Probe> {
   const s = latest()
   // A sample with no memory total is sysmon on a machine without /proc.
   if (profile && s && s.memTotal > 0 && (await $.clock.now()) - s.at < SAMPLE_FRESH_MS) {
@@ -262,7 +271,14 @@ const KILLED = /exit code 137|killed|SIGKILL/i
 // ---- Hooks ----------------------------------------------------------------
 
 // Called from the plugin's one session.start hook (hooks/register.ts).
-export async function startResourceGuard($: EngineInterface, _options: PluginOptions): Promise<void> {
+export async function startResourceGuard($: EngineInterface, options: PluginOptions): Promise<void> {
+  starting = startNow($, options).finally(() => {
+    starting = undefined
+  })
+  await starting
+}
+
+async function startNow($: EngineInterface, _options: PluginOptions): Promise<void> {
   sliceReady = false
   running.clear()
   profile = undefined
@@ -273,7 +289,7 @@ export async function startResourceGuard($: EngineInterface, _options: PluginOpt
   let failure = ''
   for (let attempt = 0; attempt < 2 && !p; attempt++) {
     try {
-      p = await probe($)
+      p = await probeNow($)
     } catch (err) {
       failure = String(err)
       await $.clock.sleep(2000)
