@@ -40,7 +40,7 @@ export type TeamView = {
   goal: string
   // isStarted: a session or agent was started for it; isBound: that session
   // has bound itself (it knows its role).
-  roles: { name: string; isStarted: boolean; isBound: boolean; context?: number; lastAt?: string; answer?: string }[]
+  roles: { name: string; isStarted: boolean; isBound: boolean; isParked: boolean; context?: number; lastAt?: string; answer?: string }[]
   board: string
 }
 

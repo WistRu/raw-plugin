@@ -89,8 +89,23 @@ folder.
   and after every turn leaves `handoff/<role>.state.json` for the board.
   Deliveries and the session's end are appended under the note's `## Inbox`.
 - **The zone guard**: a member's Edit, Write, MultiEdit or NotebookEdit outside
-  its zone, its own note and its inbox is refused with the owner to ask.
-  Bash is not covered.
+  its zone, its own note and its inbox is refused with the owner to ask. A
+  Bash command is read for what it writes (`hooks/team/bashzone.ts`: `>`,
+  `sed -i`, `tee`, `cp`, `mv`, `rm`, `mkdir`, `git add`/`commit`/`mv`/`rm` with
+  their paths; `git stash`/`reset`/`checkout`/`clean` and `git add -A` as the
+  whole tree) and refused the same way; quotes are stripped, not parsed, so
+  the reading is conservative.
+- **The critic** (`mcp__rp__team_critic`, the subagent `rp:critic` on Opus):
+  a fresh reader of one result before its verifier sees it, answering
+  BLOCKING / NOTES / QUESTIONS; with a task id the read is recorded on the
+  task, and a task with a verifier is not sent to `awaiting_verify` without
+  it (`force` skips, saying why).
+- **The roster** (`mcp__rp__team_role`, the lead's): park a role (its messages
+  wait in its inbox), wake it, add a role, or start (or restart) a role's
+  session. `/team close` tells every member, and a member's binding ends.
+- **After a restart**: a session finds its team by its engine id (the
+  plugin's store), by its desktop address (`team.json`) when the id changed,
+  or by the brief; a `/clear` or a resume carries the membership over.
 - **`/team status`** draws the board (a pane in the lead's session,
   `team_task board` for the model); **`/team close`** ends the team and
   asks for the final report in one schema: done · worked or not · next.

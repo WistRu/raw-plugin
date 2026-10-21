@@ -23,6 +23,9 @@ export type Role = {
   address?: string
   // An in-process agent id when the role runs as a subagent instead.
   agentId?: string
+  // A parked role gets no messages: what is sent to it waits in its inbox
+  // until the lead wakes it.
+  parked?: boolean
 }
 
 export type Team = {
@@ -72,7 +75,7 @@ export function cardText(team: Team): string {
     '',
     '| role | lane | zone | deliverable | verifier |',
     '|---|---|---|---|---|',
-    ...team.roles.map(r => `| ${r.name} | ${r.lane} | ${r.zone.join(', ') || '(read-only)'} | ${r.deliverable} | ${r.verifier ?? '-'} |`),
+    ...team.roles.map(r => `| ${r.name}${r.parked ? ' (parked)' : ''} | ${r.lane} | ${r.zone.join(', ') || '(read-only)'} | ${r.deliverable} | ${r.verifier ?? '-'} |`),
     '',
     '## Rules',
     '',
@@ -83,6 +86,8 @@ export function cardText(team: Team): string {
     '- The ledger: `mcp__rp__team_task` (add / set / list / board / queue). Statuses: ready, in_progress, awaiting_verify, done, failed, dropped; blocked and ready follow from depends_on.',
     '- A message to a role: `mcp__rp__team_notify` (to its session, or an event file in its inbox when it has none).',
     '- The handoff note: `mcp__rp__team_handoff` writes the queue block of `handoff/<role>.md`; the stamp and the session id are added by the plugin.',
+    '- The critic: `mcp__rp__team_critic` reads a result with fresh eyes before it goes to its verifier; a task with a verifier is not sent to awaiting_verify without it.',
+    '- Roles (the lead only): `mcp__rp__team_role` parks, wakes, adds or starts a role.',
     '- A shell job that finishes: `sh <team folder>/notify.sh <role> "<what>" [<path>]`.',
     '- Report in one schema: what was done · worked or not · what is needed next.',
   ]
@@ -120,7 +125,7 @@ export function memberSection(team: Team, role: Role): string {
     `Team folder: ${team.dir} (card CARD.md, ledger tasks.json, your note handoff/${role.name}.md).`,
     'Rules:',
     ...team.rules.map((r, i) => `${i + 1}. ${r}`),
-    'Tools: mcp__rp__team_task (the ledger; action "queue" shows your note\'s queue block, "board" the whole team), mcp__rp__team_notify (message a role or "lead"), mcp__rp__team_handoff (write your queue block).',
+    'Tools: mcp__rp__team_task (the ledger; action "queue" shows your note\'s queue block, "board" the whole team), mcp__rp__team_notify (message a role or "lead"), mcp__rp__team_handoff (write your queue block), mcp__rp__team_critic (a fresh-eyes read of a result, run before awaiting_verify; the ledger refuses awaiting_verify on a verified task without it).',
     'At the start of a turn that begins new work, read your queue (team_task queue). Before a long wait and after every finished item call team_handoff.',
   ].join('\n')
 }
@@ -131,7 +136,7 @@ export function leadSection(team: Team): string {
     `Goal: ${team.goal}. Team folder: ${team.dir}.`,
     `Roles: ${team.roles.map(r => r.name).join(', ')}.`,
     'You own priorities, the ledger and the operator\'s decisions (at most two options, a recommendation first). You start nothing a role owns; you message the role.',
-    'Tools: mcp__rp__team_task (action "board" draws the board with each role\'s state), mcp__rp__team_notify; /team status draws the board for the person, /team close ends the team.',
+    'Tools: mcp__rp__team_task (action "board" draws the board with each role\'s state), mcp__rp__team_notify, mcp__rp__team_role (park, wake, add or start a role), mcp__rp__team_critic; /team status draws the board for the person, /team close ends the team.',
     'Only verified figures reach the operator; anything else is marked "unverified".',
   ].join('\n')
 }
