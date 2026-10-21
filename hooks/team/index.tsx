@@ -489,9 +489,18 @@ async function answerTool($: EngineInterface, m: Membership, input: Input): Prom
   const id = str(input.run)
   const run = id ? await readRun($, m.team, id) : undefined
   if (!run) return `No critic run "${id}" in this team (${runsDir(m.team)}).`
+  // A critic session's ledger pasted by hand, when the receive hook missed
+  // it: the same reading the hook does.
+  if (typeof input.ledger === 'string' && input.ledger.trim()) {
+    const before = run.round
+    await takeCriticMessage($, m, input.ledger, run.id)
+    const after = await readRun($, m.team, id)
+    if (!after || (after.round === before && after.waiting === run.waiting)) return `The pasted text holds no finding line of the form "F<n> [STATUS] SEVERITY WHO -- text"; nothing recorded.`
+    return `${renderRun(after)}\n\n${openBlocking(after) === 0 ? 'No blocking finding is open.' : `${openBlocking(after)} blocking finding(s) still open.`}`
+  }
   if (run.round >= MAX_ROUNDS) return `Run ${id} has had its ${MAX_ROUNDS} rounds; what is still OPEN goes to the verifier or the user as it stands.`
   const answers = (Array.isArray(input.answers) ? (input.answers as Input[]) : []).map(a => ({ id: str(a.id), status: str(a.status), evidence: str(a.evidence) }))
-  if (answers.length === 0) return 'answer needs answers: [{ id: "F1", status: "fixed|refuted|user|cannot", evidence: "..." }].'
+  if (answers.length === 0) return 'answer needs answers: [{ id: "F1", status: "fixed|refuted|user|cannot", evidence: "..." }], or a critic session\'s ledger pasted as `ledger`.'
   for (const a of answers) {
     if (!run.findings.some(f => f.id === a.id)) return `No finding ${a.id} in run ${id}.`
     if (!['fixed', 'refuted', 'user', 'cannot'].includes(a.status)) return `${a.id}: status must be fixed, refuted, user or cannot.`
@@ -575,13 +584,16 @@ async function reviewTool($: EngineInterface, m: Membership, input: Input): Prom
 
 // A critic session's message: its ledger lines become the run's findings
 // (the first reply) or its verdicts (a later one).
-async function takeCriticMessage($: EngineInterface, m: Membership, text: string): Promise<void> {
+async function takeCriticMessage($: EngineInterface, m: Membership, text: string, runId?: string): Promise<void> {
   const parsed = parseFindings(text)
   if (parsed.findings.length === 0) return
-  const runs = (await allRuns($, m.team)).filter(r => r.session && r.waiting)
+  const runs = (await allRuns($, m.team)).filter(r => r.session && (r.waiting || r.id === runId))
   const from = text.match(/from="(local_[0-9a-f-]+)"/)?.[1]
-  const run = runs.find(r => r.session === from) ?? (from ? undefined : runs.at(-1))
-  if (!run) return
+  const run = runId ? runs.find(r => r.id === runId) : (runs.find(r => r.session === from) ?? (from ? undefined : runs.at(-1)))
+  if (!run) {
+    $.ui.log(`${$.plugin.name}: a critic ledger arrived (${parsed.findings.length} finding lines, from ${from ?? 'an unnamed sender'}) but no review run waits on it; answer with { run, ledger } to record it by hand`, { to: 'debug' })
+    return
+  }
   const next: CriticRun = run.waiting === 'first-reply'
     ? { ...run, findings: parsed.findings, notes: parsed.notes, waiting: undefined, updatedAt: await stamp($) }
     : { ...applyVerdicts(run, text), waiting: undefined, updatedAt: await stamp($) }
@@ -756,8 +768,9 @@ const TOOLS = [
           type: 'array',
           items: { type: 'object', properties: { id: { type: 'string' }, status: { type: 'string', enum: ['fixed', 'refuted', 'user', 'cannot'] }, evidence: { type: 'string' } }, required: ['id', 'status', 'evidence'] },
         },
+        ledger: { type: 'string', description: 'A critic session\'s ledger pasted whole, to record it on the run when the receive hook missed it (no answers then)' },
       },
-      required: ['run', 'answers'],
+      required: ['run'],
     },
   },
   {

@@ -153,6 +153,8 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], bound = false, wo
   if (bound) files.set(`${DIR}/team.json`, JSON.stringify(t))
   const calls: string[] = []
   const runs: string[][] = []
+  // directories the world lists; everything else does not exist
+  const dirs = new Map<string, { name: string; kind: 'file' | 'dir' | 'other'; size: number; mtimeMs: number; isLink: boolean }[]>()
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('tool.register', (_, e) => ({ value: { tool: `mcp__rp__${e.name}` } }))
   on('agent.register', (_, e) => ({ value: { agent: `rp:${e.name}` } }))
@@ -163,7 +165,9 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], bound = false, wo
   on('session.root', () => ({ value: '/p' }))
   on('session.repo', () => ({ value: bound ? { root: '/p', remote: null, internal: false, repo: null } : null }))
   on('env.get', () => ({ value: '/home/u' }))
-  on('fs.list', () => {
+  on('fs.list', (_, e) => {
+    const listed = dirs.get(e.path)
+    if (listed) return { value: listed }
     throw new Error('ENOENT')
   })
   on('fs.exists', (_, e) => ({ value: files.has(e.path) }))
@@ -205,7 +209,7 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], bound = false, wo
     calls.push(e.tool)
     return { result: 'ran', text: 'ran' }
   })
-  return { files, calls, runs }
+  return { files, calls, runs, dirs }
 }
 
 const start = ($: Parameters<Parameters<typeof test>[1]>[0]) => $.session.start({ cwd: '/p', surface: 'desktop', isInteractive: true })
@@ -276,6 +280,27 @@ test('with flock, a ledger write holds the lock through the child the stream end
   expect(hold?.[4]).toBe(`${DIR}/.flock`)
   expect(hold?.[2]).toMatch(/flock -w "\$2" 9/)
   expect(ended).toBe(true)
+})
+
+test('a critic session\'s verdict, received as a message or pasted, lands on the waiting review run', async ($, on) => {
+  const { files, dirs } = engine(on, true)
+  const run = {
+    id: 'review-1-builder', kind: 'review', subject: 's', role: 'builder', mode: 'light', round: 1, startedAt: AT, updatedAt: AT,
+    findings: [{ id: 'F1', status: 'OPEN', severity: 'BLOCKING', who: 'AGENT', text: 'a' }, { id: 'F2', status: 'OPEN', severity: 'NOTE', who: 'USER', text: 'b' }],
+    notes: '', session: 'local_critic', waiting: 'verdict',
+  }
+  files.set(`${DIR}/critic/review-1-builder.json`, JSON.stringify(run))
+  dirs.set(`${DIR}/critic`, [{ name: 'review-1-builder.json', kind: 'file', size: 1, mtimeMs: 1, isLink: false }])
+  await start($)
+  const verdict = '<cross-session-message from="local_critic" name="Critic #1">\nF1 [SETTLED-FIXED] BLOCKING AGENT -- fixed, I checked\nF2 [USER] NOTE USER -- for the person\nWhat changed: F1 closed.\n</cross-session-message>'
+  // pasted by hand through the tool
+  const pasted = await $.tool.call({ tool: 'mcp__rp__answer', run: 'review-1-builder', ledger: verdict } as never)
+  expect(pasted.text).toMatch(/round 2/)
+  expect(pasted.text).toMatch(/F1 \[SETTLED-FIXED\]/)
+  expect(pasted.text).toMatch(/No blocking finding is open/)
+  const saved = JSON.parse(files.get(`${DIR}/critic/review-1-builder.json`) ?? '{}') as { round: number; waiting?: string }
+  expect(saved.round).toBe(2)
+  expect(saved.waiting).toBeUndefined()
 })
 
 test('a ledger write takes the folder lock in a process and gives it back (the mkdir lock; the flock one is hooks/team/lock.test.sh)', async ($, on) => {
