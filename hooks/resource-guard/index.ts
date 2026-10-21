@@ -187,7 +187,7 @@ async function makeSlice($: EngineInterface, p: Probe): Promise<void> {
   )
   if (exitCode !== 0) throw new Error(`systemctl set-property exited ${exitCode}: ${stderr.trim()}`)
   sliceReady = true
-  $.ui.log(`${$.plugin.name}: ${SLICE} high ${gb(high)} GB, max ${gb(max)} GB, swap ${gb(swap)} GB`, { to: 'debug' })
+  $.ui.log(`${SLICE} high ${gb(high)} GB, max ${gb(max)} GB, swap ${gb(swap)} GB`, { to: 'debug' })
 }
 
 // The command is written to a script file, so no quoting of it is needed.
@@ -230,7 +230,7 @@ async function learnPeak($: EngineInterface, job: Job, now: number): Promise<voi
     for (const k of keys.slice(0, keys.length - PEAKS_KEPT)) delete peaks[k]
   }
   await $.store.set(PEAKS_KEY, peaks)
-  $.ui.log(`${$.plugin.name}: "${job.sig.slice(0, 60)}" peaked at ${gb(peak)} GB`, { to: 'debug' })
+  $.ui.log(`"${job.sig.slice(0, 60)}" peaked at ${gb(peak)} GB`, { to: 'debug' })
 }
 
 // Holds the gate until the newest job's memory stops growing, or RAMP_MS.
@@ -264,14 +264,14 @@ async function watchdog($: EngineInterface, p: Probe): Promise<void> {
   }
   if (!/^\d+$/.test(pid)) return
   await $.process.run(['sh', '-c', `pkill -TERM -P ${pid}; kill -TERM ${pid}`], { timeoutMs: 5000 })
-  $.ui.log(`${$.plugin.name}: only ${gb(p.mem_avail)} GB RAM left, stopped the newest heavy job (pid ${pid}) so the desktop survives`)
+  $.ui.log(`only ${gb(p.mem_avail)} GB RAM left, stopped the newest heavy job (pid ${pid}) so the desktop survives`)
 }
 
 // ---- Hints ----------------------------------------------------------------
 
 function swapHint($: EngineInterface, p: Probe): string | undefined {
   if (p.os !== 'Linux' || p.swap_dynamic === 1) return undefined
-  return `${$.plugin.name}: swap on this machine is fixed-size. For Mac-like swap (compressed in RAM, disk files made on demand) run once, with the administrator password:\n  sudo ${$.plugin.root}/${SETUP}`
+  return `swap on this machine is fixed-size. For Mac-like swap (compressed in RAM, disk files made on demand) run once, with the administrator password:\n  sudo ${$.plugin.root}/${SETUP}`
 }
 
 const KILLED = /exit code 137|killed|SIGKILL/i
@@ -304,7 +304,7 @@ async function startNow($: EngineInterface, _options: PluginOptions): Promise<vo
     }
   }
   if (!p) {
-    $.ui.log(`${$.plugin.name}: the machine probe failed at start (${failure}); heavy commands are not checked until it works`)
+    $.ui.log(`the machine probe failed at start (${failure}); heavy commands are not checked until it works`)
   } else {
     try {
       await showStatus($, p)
@@ -316,7 +316,7 @@ async function startNow($: EngineInterface, _options: PluginOptions): Promise<vo
         await $.store.set(SWAP_HINT_KEY, true)
       }
     } catch (err) {
-      $.ui.log(`${$.plugin.name}: setup failed: ${String(err)}`)
+      $.ui.log(`setup failed: ${String(err)}`)
     }
   }
   $.clock.every(TICK_MS, async () => {
@@ -373,7 +373,7 @@ export function registerResourceGuard(on: On): void {
       try {
         p = await probe($)
       } catch (err) {
-        $.ui.log(`${$.plugin.name}: probe failed, command not checked: ${String(err)}`, { to: 'debug' })
+        $.ui.log(`probe failed, command not checked: ${String(err)}`, { to: 'debug' })
         open()
         return next({ ...e, command })
       }
@@ -381,7 +381,7 @@ export function registerResourceGuard(on: On): void {
       const why = shortage(p, expected(sig))
       if (why) {
         open()
-        $.ui.log(`${$.plugin.name}: held a heavy command — ${why}`)
+        $.ui.log(`held a heavy command — ${why}`)
         return {
           deny: `${$.plugin.name}: no headroom for a heavy command. ${why}. Now: ${snapshot(p)}. Wait or run fewer jobs in parallel, then retry.`,
         }
@@ -399,7 +399,7 @@ export function registerResourceGuard(on: On): void {
       await $.fs.write(job.files.sh, command + '\n')
       running.set(id, job)
       await showStatus($, p)
-      $.ui.log(`${$.plugin.name}: heavy command started${sliceReady ? ` in ${SLICE}` : ''} — ${snapshot(p)}`, { to: 'debug' })
+      $.ui.log(`heavy command started${sliceReady ? ` in ${SLICE}` : ''} — ${snapshot(p)}`, { to: 'debug' })
       void ramp($, job).finally(open)
 
       const ran = await next({ ...e, command: wrap(job) })
